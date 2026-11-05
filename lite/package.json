@@ -1,6 +1,6 @@
 {
   "name": "worktop-lite",
-  "version": "2.6.3",
+  "version": "3.1.0",
   "description": "Worktop — a local-first personal workbench made of plain Markdown: app launcher, todo board & calendar, bookmarks, server assets & encrypted credentials, quick notes, key docs, and a BYOK AI assistant. No database, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
