@@ -1,0 +1,43 @@
+{
+  "name": "worktop",
+  "private": true,
+  "version": "3.1.0",
+  "description": "Worktop — 本地优先的个人工作台桌面版：待办/导航/资产/凭据/速记 + 桌面壳、Dock 与桌宠（Tauri 2 + Vue 3 + Rust）",
+  "license": "MIT",
+  "author": "Worktop contributors",
+  "type": "module",
+  "keywords": [
+    "tauri",
+    "vue",
+    "desktop",
+    "obsidian",
+    "markdown",
+    "personal-workbench"
+  ],
+  "engines": {
+    "node": ">=20.19",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "airsnip:fetch": "node scripts/fetch-airsnip.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.3.13"
+  }
+}

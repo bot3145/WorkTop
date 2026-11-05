@@ -1,0 +1,23 @@
+{
+  "name": "worktop-lite",
+  "version": "2.6.3",
+  "description": "Worktop — a local-first personal workbench made of plain Markdown: app launcher, todo board & calendar, bookmarks, server assets & encrypted credentials, quick notes, key docs, and a BYOK AI assistant. No database, zero runtime dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "author": "bot3145",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node server.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test test-*.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

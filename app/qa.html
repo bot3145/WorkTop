@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Worktop QA（mock backend）</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #dfe6ec;
+      }
+      #app {
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- 先装 mock 的 Tauri IPC，再启动界面（模块脚本按文档顺序执行） -->
+    <script type="module" src="/scripts/qa/mock-tauri.ts"></script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

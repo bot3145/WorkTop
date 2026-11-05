@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>个人工作台</title>
+  <link rel="icon" href="/favicon.ico" />
+  <script>
+    // 先于渲染读主题，避免首帧背景闪白/闪黑（与 client.jsx 的四套调色板保持一致）
+    try {
+      var t = localStorage.getItem("pwb_theme"), a = localStorage.getItem("pwb_accent")
+      var dark = t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
+      var bg = dark ? (a === "pink" ? "#161013" : "#111113") : (a === "pink" ? "#faf5f7" : "#f5f5f7")
+      document.documentElement.style.background = bg
+      document.documentElement.style.colorScheme = dark ? "dark" : "light"
+    } catch (e) {}
+  </script>
+  <style>
+    html, body, #root { height: 100%; margin: 0; }
+    body { background: #f5f5f7; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111113; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <!-- 版本参数：发版后旧缓存的 app.js 立即失效 -->
+  <script src="/app.js?v=2.3.0"></script>
+  <script>
+    // 渲染看门狗：4 秒后 #root 仍为空（app.js 加载或执行失败等一切情况），先自动重载一次
+    // （sessionStorage 防循环），再不行就显示可手动重试的错误卡——绝不无声白屏。
+    setTimeout(function () {
+      var root = document.getElementById("root")
+      if (!root || root.childElementCount > 0) return
+      if (!sessionStorage.getItem("pwb_auto_reload")) {
+        sessionStorage.setItem("pwb_auto_reload", "1")
+        location.reload()
+        return
+      }
+      var card = document.createElement("div")
+      card.id = "pwb-reload-card"
+      card.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:420px;background:#fff;border:1px solid #e4e5e9;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.14);padding:14px 16px;font:13px/1.6 system-ui,'Microsoft YaHei',sans-serif;color:#1d1d1f;z-index:99"
+      card.innerHTML = "<b>界面没有加载出来</b><br><span style='color:#6e6e73'>服务在运行，但界面脚本没有启动。点「重试」重新加载；若反复出现，关闭此窗口后重新双击「启动工作台」。</span>"
+      var row = document.createElement("div")
+      row.style.cssText = "margin-top:10px;display:flex;gap:8px"
+      var b = document.createElement("button")
+      b.textContent = "重试"
+      b.style.cssText = "flex:1;height:30px;border:none;border-radius:8px;background:#0066cc;color:#fff;font:inherit;font-weight:500;cursor:pointer"
+      b.onclick = function () { location.reload() }
+      row.appendChild(b)
+      card.appendChild(row)
+      document.body.appendChild(card)
+    }, 4000)
+    // 全局错误外显：任何脚本错误直接显示在页面上（并写入标题），不再无声白屏
+    window.addEventListener("error", function (e) {
+      var msg = "脚本错误: " + (e.message ?? "未知") + " @ " + (e.filename ?? "") + ":" + (e.lineno ?? "")
+      try { document.title = "ERR: " + (e.message ?? "") } catch (ex) {}
+      var d = document.createElement("pre")
+      d.style.cssText = "position:fixed;top:0;left:0;right:0;background:#1d1d1f;color:#ff6b6b;padding:12px 16px;z-index:99998;font:12px/1.6 Consolas,monospace;white-space:pre-wrap;margin:0"
+      d.textContent = msg
+      document.body.appendChild(d)
+    })
+    window.addEventListener("unhandledrejection", function (e) {
+      var msg = "未处理的 Promise 拒绝: " + String(e.reason ?? "")
+      try { document.title = "ERR: " + msg } catch (ex) {}
+      var d = document.createElement("pre")
+      d.style.cssText = "position:fixed;top:0;left:0;right:0;background:#1d1d1f;color:#ff6b6b;padding:12px 16px;z-index:99998;font:12px/1.6 Consolas,monospace;white-space:pre-wrap;margin:0"
+      d.textContent = msg
+      document.body.appendChild(d)
+    })
+  </script>
+</body>
+</html>

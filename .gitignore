@@ -1,0 +1,64 @@
+# ---- 依赖与构建产物 ----
+node_modules/
+dist/
+build/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+
+# ---- 本地环境与日志 ----
+.env
+.env.*
+!.env.example
+*.log
+
+# ---- 密钥与证书：绝不提交 ----
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+id_rsa*
+id_ed25519*
+ssh/
+
+# ---- 用户数据（绝不提交）----
+# 数据目录迁移目标 / 测试数据 / 各业务数据文件
+Local/
+dev-data/
+data/
+设置.json
+待办.md
+导航.md
+资产.md
+凭据.md
+速记.md
+密钥/
+对话/
+AI/
+
+# ---- 第三方程序与素材（构建期拉取，不进 git）----
+# AirSnip（GPL-3.0）：npm run airsnip:fetch 拉取
+app/src-tauri/sidecar/
+
+# ---- 安装包与发行产物 ----
+release/
+
+# ---- 其他 AI 工具的项目笔记（非本仓库内容）----
+.workbuddy/
+
+# ---- 系统与编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+PLAN.md
+
+# 本机快捷方式（指向本机路径，不随仓库分发）
+lite/启动工作台.lnk
+lite/工作台.url

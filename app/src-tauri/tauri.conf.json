@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WorkTop",
+  "version": "3.1.0",
+  "identifier": "com.bert.worktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "个人工作台",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 940,
+        "minHeight": 620,
+        "center": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'none'",
+      "freezePrototype": true,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/dock-icons/*",
+          "$APPDATA/app-icons/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "publisher": "Worktop contributors",
+    "copyright": "Copyright © 2026 Worktop contributors. Licensed under the MIT License.",
+    "category": "Productivity",
+    "shortDescription": "本地优先的个人工作台：待办/资产/凭据/速记 + 桌面壳与吉祥物",
+    "longDescription": "WorkTop 是一个本地优先的个人工作台。数据以 Markdown 明文保存在本机（可被 Obsidian 直接编辑），凭据可用主口令加密（scrypt + AES-256-GCM）并托管在系统钥匙串。桌面层提供壁纸、顶部工具栏、启动台、Dock、可拖动卡片与原创吉祥物。前后端全程本地运行，不联网、不上传任何数据。",
+    "licenseFile": "../LICENSE",
+    "resources": [
+      "snip/snip.ps1",
+      "sidecar/airsnip/AirSnip.exe"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
+  }
+}

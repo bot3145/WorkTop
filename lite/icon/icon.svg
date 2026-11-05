@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#42a5ff"/>
+      <stop offset="1" stop-color="#0a5ed6"/>
+    </linearGradient>
+    <linearGradient id="sheet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eff2f7"/>
+    </linearGradient>
+    <filter id="winshadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#063a78" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- 底：苹果 squircle 蓝渐变 -->
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+
+  <!-- macOS 窗口意象：白卡片 + 红绿灯 -->
+  <g filter="url(#winshadow)">
+    <rect x="44" y="52" width="168" height="152" rx="26" fill="url(#sheet)"/>
+  </g>
+  <circle cx="66" cy="74" r="7" fill="#ff5f57"/>
+  <circle cx="88" cy="74" r="7" fill="#febc2e"/>
+  <circle cx="110" cy="74" r="7" fill="#28c840"/>
+  <rect x="44" y="90" width="168" height="1.5" fill="#e3e7ee"/>
+
+  <!-- 列表条：首条高亮蓝（选中项） -->
+  <rect x="66" y="110" width="124" height="12" rx="6" fill="#3e8ef9"/>
+  <rect x="66" y="136" width="96" height="12" rx="6" fill="#ccd4de"/>
+  <rect x="66" y="162" width="110" height="12" rx="6" fill="#dde3ea"/>
+</svg>

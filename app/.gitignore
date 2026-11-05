@@ -1,0 +1,49 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+
+# 本地环境与日志
+.env
+.env.*
+!.env.example
+*.log
+
+# 密钥与证书：绝不提交
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+id_rsa*
+id_ed25519*
+ssh/
+
+# 桌宠素材（CC BY-NC-SA，不打进 git；构建前一键拷贝见 scripts/bundle-pet-assets.mjs）
+src-tauri/pet-assets/
+
+# 数据文件：默认在用户数据目录；若把 PWB_DATA_DIR 指到仓库这里也会挡住
+dev-data/
+设置.json
+待办.md
+导航.md
+资产.md
+凭据.md
+速记.md
+密钥/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# AirSnip 二进制（GPL-3.0，不进 git；构建前拉取见 scripts/fetch-airsnip.mjs）
+src-tauri/sidecar/
