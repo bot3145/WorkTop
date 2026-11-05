@@ -243,9 +243,10 @@ watchEffect(() => {
   color: var(--pwb-text, #1d1d1f); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .pane-btn:hover { background: rgba(0,0,0,.08); }
 .pane-close:hover { background: #e81123; color: #fff; }
-/* 最大化 / 还原图标（CSS 方框；还原态用 box-shadow 画重叠第二框，Windows 习惯） */
-.pane-max { display: block; width: 9px; height: 9px; border: 1.4px solid currentColor; border-radius: 1.5px; }
-.pane-max.restore { box-shadow: 2px -2px 0 -1px currentColor; border-radius: 1px; }
+/* 最大化 / 还原图标：对齐 Windows 11 文件管理器（ChromeMaximize/ChromeRestore）——
+   直角方框、10×10、1px 描边；还原态右上角叠一个偏移方框。 */
+.pane-max { display: block; width: 10px; height: 10px; border: 1px solid currentColor; }
+.pane-max.restore { position: relative; box-shadow: 3px -3px 0 -1px currentColor; }
 /* 最大化时去掉窗体圆角，贴合屏幕边缘 */
 .pane-root.maximized { border-radius: 0; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; }
