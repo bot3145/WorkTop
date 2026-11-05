@@ -115,6 +115,22 @@ async function minimize() {
   await win.minimize().catch(() => {})
 }
 
+/** 最大化 / 还原（Windows 系统级最大化：占满工作区，还原后回到原位） */
+const maximized = ref(false)
+async function toggleMax() {
+  try {
+    if (await win.isMaximized()) {
+      await win.unmaximize()
+      maximized.value = false
+    } else {
+      await win.maximize()
+      maximized.value = true
+    }
+  } catch {
+    /* 权限或平台不支持时按钮静默无效 */
+  }
+}
+
 /** Esc 关闭（弹窗打开时让面板自己先处理，见各面板的 keydown 冒泡） */
 function onKey(e: KeyboardEvent) {
   if (e.key !== "Escape") return
@@ -163,11 +179,14 @@ watchEffect(() => {
 </script>
 
 <template>
-  <div class="pwb pane-root" :class="{ 'pwb-dark': dark, 'pwb-pink': accent === 'pink', 'pwb-green': accent === 'green' }">
+  <div class="pwb pane-root" :class="{ 'pwb-dark': dark, 'pwb-pink': accent === 'pink', 'pwb-green': accent === 'green', maximized }">
     <header class="pane-bar" @pointerdown="onBarDown">
       <div class="pane-title"><Icon :name="appDef(appId)?.icon ?? 'file'" :size="13" /><span>{{ title }}</span></div>
       <div class="spacer" />
       <button class="pane-btn" :title="tc('win_min')" @click="minimize"><Icon name="minus" :size="12" /></button>
+      <button class="pane-btn" :title="maximized ? tc('win_restore') : tc('win_max')" @click="toggleMax">
+        <span class="pane-max" :class="{ restore: maximized }" />
+      </button>
       <button class="pane-btn pane-close" :title="tc('win_close')" @click="close"><Icon name="x" :size="13" /></button>
     </header>
     <div class="pane-body">
@@ -224,6 +243,11 @@ watchEffect(() => {
   color: var(--pwb-text, #1d1d1f); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .pane-btn:hover { background: rgba(0,0,0,.08); }
 .pane-close:hover { background: #e81123; color: #fff; }
+/* 最大化 / 还原图标（CSS 方框；还原态用 box-shadow 画重叠第二框，Windows 习惯） */
+.pane-max { display: block; width: 9px; height: 9px; border: 1.4px solid currentColor; border-radius: 1.5px; }
+.pane-max.restore { box-shadow: 2px -2px 0 -1px currentColor; border-radius: 1px; }
+/* 最大化时去掉窗体圆角，贴合屏幕边缘 */
+.pane-root.maximized { border-radius: 0; }
 .pane-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; }
 .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
