@@ -853,20 +853,9 @@ fn snip_region_inner(app: &tauri::AppHandle) -> AppResult<()> {
 pub fn snip_capture(app: tauri::AppHandle) -> AppResult<String> {
     #[cfg(windows)]
     {
-        if let Some(exe) = find_airsnip(&app) {
-            if !process_running("airsnip.exe") {
-                let mut cmd = std::process::Command::new(&exe);
-                cmd.stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                {
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                    cmd.creation_flags(CREATE_NO_WINDOW);
-                }
-                cmd.spawn().map_err(|e| AppError::new("io", format!("启动 AirSnip 失败：{e}")))?;
-                // 首次拉起需要注册热键并预热覆盖层
-                std::thread::sleep(std::time::Duration::from_millis(600));
+        if find_airsnip(&app).is_some() {
+            if !ensure_airsnip_started(&app) {
+                return Err(AppError::new("io", "AirSnip 拉起失败"));
             }
             send_f1();
             return Ok("airsnip".into());
@@ -879,6 +868,58 @@ pub fn snip_capture(app: tauri::AppHandle) -> AppResult<String> {
         let _ = app;
         Err(AppError::validation("截图目前只支持 Windows。"))
     }
+}
+
+/// 随应用启动调用：静默拉起 AirSnip 常驻托盘（不转发热键、不弹截图），
+/// 之后用户按 F1 即截图；snip_capture 也复用本函数保证在跑。
+#[tauri::command]
+pub fn snip_ensure(app: tauri::AppHandle) -> AppResult<bool> {
+    #[cfg(windows)]
+    {
+        let _ = &app;
+        Ok(ensure_airsnip_started(&app))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(false)
+    }
+}
+
+/// 确保 AirSnip 在跑：未运行则 spawn（常驻托盘）。返回是否在运行。
+#[cfg(windows)]
+pub fn ensure_airsnip_started(app: &tauri::AppHandle) -> bool {
+    let Some(exe) = find_airsnip(app) else { return false };
+    if process_running("airsnip.exe") {
+        return true;
+    }
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.spawn() {
+        Ok(_) => {}
+        Err(e) if e.raw_os_error() == Some(740) => {
+            // AirSnip 带 UAC 提权要求：CreateProcess 报 740，经 explorer 转发走 ShellExecute
+            let fwd = std::process::Command::new("explorer.exe").arg(&exe).spawn();
+            if fwd.is_err() {
+                eprintln!("[ensure_airsnip] explorer fallback failed: {fwd:?}");
+                return false;
+            }
+        }
+        Err(e) => {
+            eprintln!("[ensure_airsnip] spawn failed: {e} (os={:?})", e.raw_os_error());
+            return false;
+        }
+    }
+    // 首次拉起需要注册热键并预热覆盖层
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    true
 }
 
 /// 找 AirSnip 可执行文件：安装目录随包副本 > 环境变量 AIRSNIP_EXE > PATH > 常见安装位置。

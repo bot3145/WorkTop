@@ -54,6 +54,20 @@ fn main() {
             app.manage(state);
             let _ = setup_tray(app);
 
+            // 随启动静默拉起 AirSnip（常驻托盘、注册 F1）——之后随时可截图；
+            // 未安装/未拉取时静默跳过（回落内置截图）。放线程避免阻塞启动。
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                    match commands::snip_ensure(handle) {
+                        Ok(true) => eprintln!("[snip_ensure] AirSnip running"),
+                        Ok(false) => eprintln!("[snip_ensure] AirSnip not found (sidecar missing?)"),
+                        Err(e) => eprintln!("[snip_ensure] error: {e}"),
+                    }
+                });
+            }
+
             // 吉祥物右键菜单事件（与托盘菜单分开监听）
             app.on_menu_event(|app, event| {
                 if event.id().as_ref() == "mascot-quit" {
@@ -115,6 +129,7 @@ fn main() {
             commands::app_quit,
             commands::snip_region,
             commands::snip_capture,
+            commands::snip_ensure,
             // AI 助手（远端算力 + 工具调用）
             ai::ai_config_get,
             ai::ai_config_set,
