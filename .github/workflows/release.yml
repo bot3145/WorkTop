@@ -58,6 +58,6 @@ jobs:
           tagName: v__VERSION__
           releaseName: "WorkTop v__VERSION__"
           releaseBody: "安装包与自动更新清单见下方资源。更新日志见仓库 CHANGELOG.md。"
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
