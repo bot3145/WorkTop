@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // 资产卡片：主机清单概览（探活状态点）；凭据绝不进卡片。
-import { onMounted, ref } from "vue"
+import { computed, onMounted, ref, watch } from "vue"
 import { call } from "../../lib/api"
+import { isLocked, refreshGuard } from "../../lib/guard"
 import WidgetShell from "../WidgetShell.vue"
 
 
@@ -16,18 +17,31 @@ interface AssetRow {
 
 const emit = defineEmits<{ "open-app": [id: string] }>()
 const assets = ref<AssetRow[]>([])
+const locked = computed(() => isLocked("assets"))
 
-onMounted(async () => {
+async function load() {
   try {
     const d = await call<{ assets: AssetRow[] }>("assets_list")
     assets.value = d.assets
   } catch {}
+}
+
+onMounted(async () => {
+  await refreshGuard()
+  if (!locked.value) await load()
+})
+
+// 上锁就清掉清单；解锁后补拉一次
+watch(locked, (v) => {
+  if (v) assets.value = []
+  else void load()
 })
 </script>
 
 <template>
   <WidgetShell id="assets" caption="资产" :width="320">
-    <div v-if="assets.length" class="as-list">
+    <div v-if="locked" class="as-empty">已上锁，打开面板输入口令</div>
+    <div v-else-if="assets.length" class="as-list">
       <div v-for="a in assets" :key="a.name" class="as-row" :title="a.note">
         <span class="as-dot" :class="a.last_status" />
         <span class="as-name">{{ a.name }}</span>

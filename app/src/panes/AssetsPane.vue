@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // 资产面板：清单 + 分组筛选 + 搜索 + TCP 探活 + 增删改 + 打开资产链接。
 // 凭据只显示标签/用户名/到期（不显示密文，也不在这里编辑）——密文只在凭据面板里解锁后可读。
-import { computed, inject, onMounted, ref, type ComputedRef } from "vue"
+import { computed, inject, onMounted, ref, watch, type ComputedRef } from "vue"
 import { call } from "../lib/api"
 import { askConfirm, toast } from "../lib/ui"
+import { guardReady, isLocked, refreshGuard } from "../lib/guard"
 import type { T } from "../i18n"
 import Icon from "../components/Icon.vue"
+import GuardGate from "../components/GuardGate.vue"
 
 const t = inject<ComputedRef<T>>("t")!
 
@@ -42,6 +44,8 @@ const curGrp = ref("")
 const busy = ref("")
 const loading = ref(true)
 
+const locked = computed(() => isLocked("assets"))
+
 async function load() {
   loading.value = true
   try {
@@ -54,7 +58,22 @@ async function load() {
     loading.value = false
   }
 }
-onMounted(load)
+onMounted(async () => {
+  await refreshGuard()
+  if (locked.value) loading.value = false
+  else await load()
+})
+// 上锁后清空清单，避免资产名/主机名残留在窗口里；解锁则重新拉一次
+watch(locked, (v) => {
+  if (!v) {
+    void load()
+    return
+  }
+  assets.value = []
+  groups.value = []
+  busy.value = ""
+  loading.value = false
+})
 
 const filtered = computed(() => {
   const kw = q.value.trim().toLowerCase()
@@ -172,6 +191,9 @@ const fmtTime = (iso: string) => {
 
 <template>
   <div>
+    <GuardGate v-if="guardReady && locked" module="assets" @unlocked="load" />
+    <div v-else-if="!guardReady" style="height: 58vh" />
+    <template v-else>
     <div class="row" style="flex-wrap: wrap; margin-bottom: 10px">
       <button class="primary" @click="addNew"><Icon name="plus" :size="14" />新增资产</button>
       <button :disabled="!!busy || !filtered.length" @click="checkAll">全部检测</button>
@@ -263,6 +285,7 @@ const fmtTime = (iso: string) => {
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 

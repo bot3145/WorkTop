@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // 密钥文档面板：固定尺寸卡片 + 弹窗查看/编辑（ESC 两步退出）+ 新建/导入 .md|.txt。
-import { computed, inject, onMounted, ref, type ComputedRef } from "vue"
+import { computed, inject, onMounted, ref, watch, type ComputedRef } from "vue"
 import { call, ApiError, type KeyDoc } from "../lib/api"
 import { toast, askConfirm } from "../lib/ui"
+import { guardReady, isLocked, refreshGuard } from "../lib/guard"
 import type { T } from "../i18n"
 import Icon from "../components/Icon.vue"
 import AddCard from "../components/AddCard.vue"
+import GuardGate from "../components/GuardGate.vue"
 
 const t = inject<ComputedRef<T>>("t")!
 
@@ -16,7 +18,22 @@ const draft = ref<string | null>(null)
 const adding = ref(false)
 const newName = ref("")
 
-onMounted(load)
+const locked = computed(() => isLocked("keys"))
+onMounted(async () => {
+  await refreshGuard()
+  if (!locked.value) await load()
+})
+// 在别处上锁后立刻清空已加载内容（含弹窗），不把明文留在窗口里；解锁则重新拉一次
+watch(locked, (v) => {
+  if (!v) {
+    void load()
+    return
+  }
+  docs.value = null
+  detail.value = null
+  draft.value = null
+  adding.value = false
+})
 async function load() {
   try {
     const d = await call<KeyDoc[]>("keysdocs_list")
@@ -142,6 +159,9 @@ const closeDetail = () => {
 
 <template>
   <div>
+    <GuardGate v-if="guardReady && locked" module="keys" @unlocked="load" />
+    <div v-else-if="!guardReady" style="height: 58vh" />
+    <template v-else>
     <div class="row" style="flex-wrap: wrap">
       <div class="pwb-search">
         <Icon name="search" :size="14" />
@@ -220,6 +240,7 @@ const closeDetail = () => {
         <div class="muted" style="margin-top: 8px">{{ t("kd_import_hint") }}</div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 

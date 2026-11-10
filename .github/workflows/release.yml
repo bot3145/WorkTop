@@ -1,0 +1,63 @@
+name: release
+
+# 打 tag（v3.1.0 这种）即触发：编译 NSIS 安装包 + 更新用的 .sig 与 latest.json，上传到 GitHub Release。
+# 应用内「设置 → 关于 → 检查更新」读取的就是这个 Release 的 latest.json。
+#
+# 一次性配置（仓库 Settings → Secrets and variables → Actions）：
+#   TAURI_SIGNING_PRIVATE_KEY            ~/.tauri/worktop.key 的**文件内容**（不是路径）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD   生成密钥时设的密码，空密码就留空/不建这个 secret
+#   GITHUB_TOKEN 由 Actions 自动提供，无需手动加。
+# 私钥丢失/泄露只能重新生成密钥对并让所有人手动装一次新版本（旧版本验签会失败）。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - name: 安装前端依赖
+        working-directory: app
+        run: npm ci
+
+      - name: 拉取随包分发的 AirSnip
+        working-directory: app
+        run: npm run airsnip:fetch
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tagName: v__VERSION__
+          releaseName: "WorkTop v__VERSION__"
+          releaseBody: "安装包与自动更新清单见下方资源。更新日志见仓库 CHANGELOG.md。"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true

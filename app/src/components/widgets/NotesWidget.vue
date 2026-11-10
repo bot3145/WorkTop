@@ -1,15 +1,17 @@
 <script setup lang="ts">
 // 速记小组件：白卡，最新一条速记预览；点击打开速记窗口。
-import { inject, onMounted, ref, type ComputedRef } from "vue"
+import { computed, inject, onMounted, ref, watch, type ComputedRef } from "vue"
 import { call, type TextDoc } from "../../lib/api"
+import { isLocked, refreshGuard } from "../../lib/guard"
 import type { T } from "../../i18n"
 import WidgetShell from "../WidgetShell.vue"
 
 const emit = defineEmits<{ "open-app": [id: string] }>()
 const t = inject<ComputedRef<T>>("t")!
 const latest = ref<{ time: string; body: string } | null>(null)
+const locked = computed(() => isLocked("note"))
 
-onMounted(async () => {
+async function load() {
   try {
     const d = await call<TextDoc>("note_get")
     const sections: { title: string; lines: string[] }[] = []
@@ -29,12 +31,24 @@ onMounted(async () => {
       latest.value = { time, body: last.lines.join("\n").trim() }
     }
   } catch {}
+}
+
+onMounted(async () => {
+  await refreshGuard()
+  if (!locked.value) await load()
+})
+
+// 上锁就清掉预览；解锁后补拉一次
+watch(locked, (v) => {
+  if (v) latest.value = null
+  else void load()
 })
 </script>
 
 <template>
   <WidgetShell id="notes" caption="便签" :width="286">
-    <template v-if="latest">
+    <div v-if="locked" class="nw-empty">{{ t("guard_locked_short") }}</div>
+    <template v-else-if="latest">
       <div class="nw-time">{{ latest.time }}</div>
       <div class="nw-body">{{ latest.body || "…" }}</div>
     </template>

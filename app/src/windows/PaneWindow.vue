@@ -25,7 +25,7 @@ const params = new URLSearchParams(location.search)
 const appId = params.get("app") ?? "todo"
 
 // 设置面板初始标签：?tab=dock|appearance|desktop|about（Dock 的设置入口直达 Dock 标签）
-const SETTINGS_TABS = ["appearance", "dock", "desktop", "about"] as const
+const SETTINGS_TABS = ["appearance", "dock", "desktop", "guard", "about"] as const
 type SettingsTab = (typeof SETTINGS_TABS)[number]
 const settingsTab: SettingsTab = SETTINGS_TABS.includes(params.get("tab") as SettingsTab)
   ? (params.get("tab") as SettingsTab)

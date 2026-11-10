@@ -35,6 +35,14 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 在线更新：从 GitHub Releases 的 latest.json 检查新版本（Rust 侧发起，走系统网络栈）
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        // 开机自启：带 --autostart 参数拉起（见 setup 里的静默启动处理）
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .setup(|app| {
             use tauri::Manager;
             let app_data = app
@@ -46,11 +54,25 @@ fn main() {
             let state = AppState {
                 root: Mutex::new(root),
                 vault_key: Mutex::new(None),
+                guard_open: Mutex::new(std::collections::BTreeSet::new()),
                 ai_undo: Mutex::new(std::collections::HashMap::new()),
             };
             // 旧版数据迁移（资产.md 内嵌凭据 → 凭据.md）与钥匙串静默解锁
             commands::assets::migrate_credential_split(&state);
             commands::assets::try_autounlock(&state);
+            // 开机自启（--autostart）：桌面壳模式下直接静默进桌面，不弹工作台主窗（也避免一闪而过）
+            if std::env::args().any(|a| a == "--autostart") {
+                let desktop_on = commands::read_settings(&state)
+                    .get("desktop")
+                    .and_then(|d| d.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if desktop_on {
+                    if let Some(main) = app.get_webview_window("main") {
+                        let _ = main.hide();
+                    }
+                }
+            }
             app.manage(state);
             let _ = setup_tray(app);
 
@@ -65,6 +87,22 @@ fn main() {
                         Ok(false) => eprintln!("[snip_ensure] AirSnip not found (sidecar missing?)"),
                         Err(e) => eprintln!("[snip_ensure] error: {e}"),
                     }
+                });
+            }
+
+            // 预热吉祥物弧形菜单窗：现建一个 WebView2 窗口要一两百毫秒，
+            // 启动 1.5s 后先在后台把隐藏窗建好，之后点吉祥物只做 set_position + show。
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        match commands::desktop::prewarm_mascot_menu(&h) {
+                            Ok(_) => eprintln!("[mascot] menu prewarmed"),
+                            Err(e) => eprintln!("[mascot] menu prewarm failed: {e}"),
+                        }
+                    });
                 });
             }
 
@@ -99,6 +137,13 @@ fn main() {
             commands::keysdocs_meta,
             commands::keysdoc_put,
             commands::keysdoc_delete,
+            // 模块锁（门禁）
+            commands::guard::guard_state_get,
+            commands::guard::guard_password_set,
+            commands::guard::guard_password_clear,
+            commands::guard::guard_modules_set,
+            commands::guard::guard_unlock,
+            commands::guard::guard_lock,
             // 资产 / 凭据 / 保险库
             commands::assets::assets_list,
             commands::assets::asset_create,
@@ -180,6 +225,12 @@ fn main() {
             commands::apps::apps_open_folder,
             commands::apps::apps_suggest_dir,
         ])
-        .run(tauri::generate_context!())
-        .expect("Worktop 启动失败");
+        .build(tauri::generate_context!())
+        .expect("Worktop 启动失败")
+        .run(|_app, event| {
+            // 托盘/吉祥物「退出程序」等所有退出路径都要还原任务栏
+            if let tauri::RunEvent::Exit = event {
+                commands::taskbar_restore();
+            }
+        });
 }

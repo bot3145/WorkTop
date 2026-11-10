@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // 速记面板：flomo 式卡片流（按月归档、统一卡高、编辑/删除、整篇编辑、搜索、＋ 新建卡）。
-import { computed, inject, onMounted, ref, type ComputedRef } from "vue"
+import { computed, inject, onMounted, ref, watch, type ComputedRef } from "vue"
 import { call, ApiError, type TextDoc } from "../lib/api"
 import { toast } from "../lib/ui"
 import { pad2 } from "../lib/date"
+import { guardReady, isLocked, refreshGuard } from "../lib/guard"
 import type { Lang, T } from "../i18n"
 import Icon from "../components/Icon.vue"
 import AddCard from "../components/AddCard.vue"
+import GuardGate from "../components/GuardGate.vue"
 
 const t = inject<ComputedRef<T>>("t")!
 const lang = inject<ComputedRef<Lang>>("lang")!
@@ -18,7 +20,23 @@ const rawMode = ref(false)
 const rawDraft = ref("")
 const editing = ref<{ idx: number; text: string } | null>(null)
 
-onMounted(load)
+const locked = computed(() => isLocked("note"))
+onMounted(async () => {
+  await refreshGuard()
+  if (!locked.value) await load()
+})
+// 上锁后清空正文与编辑态，不在窗口里留明文；解锁则重新拉一次
+watch(locked, (v) => {
+  if (!v) {
+    void load()
+    return
+  }
+  raw.value = null
+  hash.value = ""
+  rawMode.value = false
+  rawDraft.value = ""
+  editing.value = null
+})
 async function load() {
   try {
     const d = await call<TextDoc>("note_get")
@@ -189,6 +207,9 @@ const MONTHS = () => t.value("months").split(",")
 
 <template>
   <div>
+    <GuardGate v-if="guardReady && locked" module="note" @unlocked="load" />
+    <div v-else-if="!guardReady" style="height: 58vh" />
+    <template v-else>
     <div class="row" style="flex-wrap: wrap">
       <button class="mini" :disabled="!!editing" @click="rawMode ? (rawMode = false) : ((rawDraft = raw ?? ''), (rawMode = true))">
         {{ t("note_raw") }}
@@ -239,5 +260,6 @@ const MONTHS = () => t.value("months").split(",")
         <div v-if="!kw" class="note-grid"><AddCard :label="t('note_new')" :disabled="!!editing" @click="newCard" /></div>
       </template>
     </div>
+    </template>
   </div>
 </template>

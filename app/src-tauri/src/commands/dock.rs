@@ -857,6 +857,9 @@ pub async fn dock_open(
 
 #[tauri::command]
 pub fn dock_close(app: tauri::AppHandle) -> AppResult<()> {
+    // 关 Dock 必还原任务栏：Dock 是唯一会藏任务栏的地方，且窗口销毁后前端
+    // 就没有机会再调 taskbar_show 了（设置页先关窗后广播的时序踩过坑）。
+    super::taskbar_restore();
     if let Some(win) = app.get_webview_window("dock") {
         let _ = win.close();
     }

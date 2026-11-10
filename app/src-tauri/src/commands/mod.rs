@@ -3,6 +3,7 @@ pub mod apps;
 pub mod assets;
 pub mod desktop;
 pub mod dock;
+pub mod guard;
 
 use crate::error::{AppError, AppResult};
 use crate::store::{self, nav::NavDoc, read_doc, write_doc};
@@ -17,6 +18,8 @@ pub struct AppState {
     /// 数据根目录（迁移后会变，用锁保护；读取一律走 root()/file() 等方法）
     pub root: Mutex<PathBuf>,
     pub vault_key: Mutex<Option<[u8; 32]>>,
+    /// 已通过口令解锁的模块（内存态：退出程序即全部重新上锁）
+    pub guard_open: Mutex<std::collections::BTreeSet<String>>,
     /// AI 写入的撤销快照（内存，保留最近 80 条）
     pub ai_undo: crate::ai::tools::UndoMap,
 }
@@ -782,8 +785,8 @@ pub fn taskbar_visible() -> bool {
     }
 }
 
-/// 退出前恢复（供 main 的 RunEvent::Exit 调用，避免用户丢失任务栏）
-pub fn restore_taskbar_on_exit() {
+/// 恢复 Windows 任务栏（Dock 关闭 / 应用退出时调用，避免用户丢失任务栏）
+pub fn taskbar_restore() {
     #[cfg(windows)]
     {
         let _ = set_taskbar(false);
@@ -793,7 +796,7 @@ pub fn restore_taskbar_on_exit() {
 /// 退出应用（任务栏被隐藏时托盘也看不到，Dock 菜单需要一个退出入口）
 #[tauri::command]
 pub fn app_quit(app: tauri::AppHandle) -> AppResult<()> {
-    restore_taskbar_on_exit();
+    taskbar_restore();
     app.exit(0);
     Ok(())
 }

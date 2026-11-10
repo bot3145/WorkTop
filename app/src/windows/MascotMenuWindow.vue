@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // 吉祥物菜单：透明窗口以人物中心为锚，5 个烟玻璃圆钮沿人物**左侧半弧（12 点 → 9 点 → 6 点方向）**
-// 45° 等分排列（待办在正上，依次速记/AI/设置/截图到正下），弧形扫出动画 + 单层轨道虚线环；
+// 45° 等分排列（待办在正上，依次速记/AI/截图/设置到正下），弧形扫出动画 + 单层轨道虚线环；
 // 失焦/Esc/点空白优雅收起。
+// 窗口由启动时预热并常驻（点开只 show，不重建），因此「打开」由 mascot-menu:show 事件驱动重播。
 // 样式遵守 2026-11-02 定稿：浅色磨砂玻璃、主题色 8%–18% 淡着色、--m-* 变量、storage 实时换色。
 import { computed, onMounted, onUnmounted, ref } from "vue"
 import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import Icon from "../components/Icon.vue"
 import { accentVars, readAccent, type Accent } from "../lib/accent"
@@ -20,19 +22,26 @@ const R = 72
 const q = new URLSearchParams(location.search)
 const fx = Number(q.get("fx") ?? 254)
 const fy = Number(q.get("fy") ?? 130)
+/** 预览用：qa.html?win=mascotmenu&auto=1 直接展开（浏览器里跑不出 Tauri 事件） */
+const autoOpen = q.get("auto") === "1"
 
 const ITEMS = [
   { id: "todo", icon: "checkCircle", label: "待办", angle: 0 },
   { id: "note", icon: "edit", label: "速记", angle: -45 },
   { id: "ai", icon: "star", label: "AI", angle: -90 },
-  { id: "settings", icon: "sliders", label: "设置", angle: -135 },
-  { id: "snip", icon: "camera", label: "截图", angle: -180 },
+  { id: "snip", icon: "camera", label: "截图", angle: -135 },
+  { id: "settings", icon: "sliders", label: "设置", angle: -180 },
 ] as const
 
 const opened = ref(false)
 const closing = ref(false)
 const settled = ref(false)
 let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 扫出动画总时长（最后一颗按钮 = 4×16ms 延迟 + 200ms）——用于结束态与关闭时机 */
+const ANIM_MS = 300
+/** 收起动画总时长（倒序 4×12ms 延迟 + 160ms）+ 一点余量，动画播完才真正隐藏 */
+const CLOSE_MS = 240
 
 /* 跟随工作台主题色：与吉祥物共用同一套调色板 */
 const accent = ref<Accent>(readAccent())
@@ -63,16 +72,35 @@ function close() {
   closing.value = true
   settled.value = false
   if (settleTimer) clearTimeout(settleTimer)
-  window.setTimeout(() => void invoke("mascot_menu_close").catch(() => {}), 430)
+  window.setTimeout(() => void invoke("mascot_menu_close").catch(() => {}), CLOSE_MS)
 }
 
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") close()
 }
 
+/** 重播扫出动画：复用同一个窗口，每次打开都要把状态推回初值再触发。 */
+// 初值必须是「很久以前」：页面刚加载时 performance.now() 可能还不到 220ms，
+// 若用 0 初值，首次（也是预热后很可能紧接着的第一次）展开会被去抖吞掉，出现空菜单。
+let lastOpenAt = -1e9
+function playOpen() {
+  const now = performance.now()
+  if (now - lastOpenAt < 220) return
+  lastOpenAt = now
+  closing.value = false
+  settled.value = false
+  opened.value = false
+  if (settleTimer) clearTimeout(settleTimer)
+  requestAnimationFrame(() => {
+    opened.value = true
+    settleTimer = setTimeout(() => (settled.value = true), ANIM_MS)
+  })
+}
+
 let hadFocus = false
 let closeTimer: ReturnType<typeof setTimeout> | null = null
 let unlistenBlur: (() => void) | null = null
+let unlistenShow: (() => void) | null = null
 onMounted(async () => {
   window.addEventListener("keydown", onKey)
   window.addEventListener("storage", onAccentStorage)
@@ -83,23 +111,27 @@ onMounted(async () => {
         clearTimeout(closeTimer)
         closeTimer = null
       }
+      // 兜底：窗口被 show 出来就会拿到焦点，若此刻还没展开就补播（事件丢失也不会出现「空菜单」）
+      if (!opened.value && !closing.value) playOpen()
     } else if (hadFocus) {
       closeTimer = setTimeout(close, 150)
     }
   })
-  requestAnimationFrame(() => {
-    opened.value = true
-    // 扫出动画结束后移除 animation，避免 animation-fill-mode 覆盖 hover 缩放。
-    settleTimer = setTimeout(() => {
-      settled.value = true
-    }, 545)
-  })
+  // 主路径：Rust 每次展开都会 emit 一次，收到就重播动画
+  unlistenShow = await listen("mascot-menu:show", () => playOpen())
+  // 兜底 1：窗口是「现建现显」（预热失败）时事件早于监听，按可见性补播一次
+  try {
+    if (await win.isVisible()) playOpen()
+  } catch {}
+  // 兜底 2：浏览器预览（qa.html）没有 Tauri 事件通道，按参数直接展开
+  if (autoOpen) playOpen()
 })
 onUnmounted(() => {
   window.removeEventListener("keydown", onKey)
   window.removeEventListener("storage", onAccentStorage)
   if (settleTimer) clearTimeout(settleTimer)
   unlistenBlur?.()
+  unlistenShow?.()
 })
 </script>
 
@@ -139,7 +171,7 @@ onUnmounted(() => {
   transform: scale(0.7);
 }
 .orbit-ring.on {
-  animation: ring-in 0.4s ease-out both;
+  animation: ring-in 0.22s ease-out both;
 }
 .arc-wrap.closing .orbit-ring {
   opacity: 0;
@@ -185,8 +217,8 @@ onUnmounted(() => {
 }
 .arc-btn.on {
   pointer-events: auto;
-  animation: fb-sweep 0.34s cubic-bezier(0.3, 1.4, 0.45, 1) both;
-  animation-delay: calc(var(--i) * 35ms);
+  animation: fb-sweep 0.2s cubic-bezier(0.3, 1.4, 0.45, 1) both;
+  animation-delay: calc(var(--i) * 16ms);
 }
 .arc-btn.settled {
   animation: none;
@@ -207,8 +239,8 @@ onUnmounted(() => {
 }
 .arc-btn.closing {
   pointer-events: none;
-  animation: fb-retreat 0.28s cubic-bezier(0.5, 0, 0.75, 0.4) both;
-  animation-delay: calc((var(--n) - 1 - var(--i)) * 26ms);
+  animation: fb-retreat 0.16s cubic-bezier(0.5, 0, 0.75, 0.4) both;
+  animation-delay: calc((var(--n) - 1 - var(--i)) * 12ms);
 }
 .lbl {
   font-size: 8px;

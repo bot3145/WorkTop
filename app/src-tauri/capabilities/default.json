@@ -10,7 +10,12 @@
     "card-clock",
     "card-calendar",
     "card-todo",
-    "card-notes", "card-apps", "card-nav", "card-assets", "card-keys", "card-ai",
+    "card-notes",
+    "card-apps",
+    "card-nav",
+    "card-assets",
+    "card-keys",
+    "card-ai",
     "pane-apps",
     "pane-todo",
     "pane-nav",
@@ -42,6 +47,10 @@
     "core:window:allow-set-title",
     "core:window:allow-start-dragging",
     "core:window:allow-set-ignore-cursor-events",
-    "dialog:default"
+    "dialog:default",
+    "updater:default",
+    "process:allow-restart",
+    "process:allow-exit",
+    "autostart:default"
   ]
 }

@@ -143,14 +143,59 @@ pub fn mascot_close(app: tauri::AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/// 弹出弧形菜单窗：贴着吉祥物星球展开（折叠在哪侧就朝另一侧弹）。
-#[tauri::command]
-pub async fn mascot_menu_open(app: tauri::AppHandle) -> AppResult<()> {
-    if let Some(win) = app.get_webview_window("mascot-menu") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return Ok(());
+/// 建一个**隐藏**的菜单窗（位置在每次打开时再设）。
+/// 关键点：这个窗只在启动预热阶段建一次，之后一直复用——点击时只做 set_position/show，
+/// 省掉新建 WebView2 + 加载整页前端那一两百毫秒。
+fn build_menu_window(app: &tauri::AppHandle) -> AppResult<tauri::WebviewWindow> {
+    let (menu_w, menu_h) = (300.0, 260.0);
+    let (anchor_x, anchor_y) = (254.0, 130.0);
+    let v = now_ms();
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "mascot-menu",
+        tauri::WebviewUrl::App(format!(
+            "index.html?win=mascotmenu&v={v}&fx={anchor_x}&fy={anchor_y}"
+        ).into()),
+    )
+    .title("WorkTop Menu")
+    .inner_size(menu_w, menu_h)
+    .position(0.0, 0.0)
+    .transparent(true)
+    .decorations(false)
+    .resizable(false)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .background_color(tauri::window::Color(0, 0, 0, 0))
+    .build()
+    .map_err(|e| AppError::new("internal", format!("创建菜单窗口失败：{e}")))
+}
+
+/// 预热菜单窗：启动后台调用，把前端提前加载好（隐藏状态下不会闪）。
+pub fn prewarm_mascot_menu(app: &tauri::AppHandle) -> AppResult<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window("mascot-menu") {
+        return Ok(w);
     }
+    #[cfg(debug_assertions)]
+    let t0 = std::time::Instant::now();
+    let win = build_menu_window(app)?;
+    #[cfg(debug_assertions)]
+    eprintln!("[mascot] menu window built in {}ms（这笔开销原来每次点开都要付）", t0.elapsed().as_millis());
+    Ok(win)
+}
+
+/// 弹出弧形菜单窗：贴着吉祥物星球展开（折叠在哪侧就朝另一侧弹）。
+/// 同步实现（命令层只是薄包装，便于内部复用/压测）。
+pub fn menu_open_sync(app: &tauri::AppHandle) -> AppResult<()> {
+    use tauri::Emitter;
+    #[cfg(debug_assertions)]
+    let t0 = std::time::Instant::now();
+
+    // 菜单窗应该是预热好的；极端情况（预热失败）现建一个，功能不退化
+    let win = prewarm_mascot_menu(app)?;
+
     let m = app
         .get_webview_window("mascot")
         .ok_or_else(|| AppError::new("internal", "吉祥物窗口不存在"))?;
@@ -170,7 +215,7 @@ pub async fn mascot_menu_open(app: tauri::AppHandle) -> AppResult<()> {
     let myp = pos.y as f64 / ms;
 
     // 菜单窗以人物中心为锚展开：5 个按钮沿人物**左侧半弧**排布（正上→左→正下）。
-    // 几何：窗 300×260，锚点（弧心=人物中心）在窗右侧 (254,130)，轨道半径 90、按钮 52px。
+    // 几何：窗 300×260，锚点（弧心=人物中心）在窗右侧 (254,130)，轨道半径 72、按钮 40px。
     let planet_cx = mx + mw * 0.5;
     let planet_cy = myp + mh * 0.5;
     let (menu_w, menu_h) = (300.0, 260.0);
@@ -185,44 +230,36 @@ pub async fn mascot_menu_open(app: tauri::AppHandle) -> AppResult<()> {
     let target_mx = x + anchor_x - mw * 0.5;
     let target_my = y + anchor_y - mh * 0.5;
 
-    let v = now_ms();
-    let win = tauri::WebviewWindowBuilder::new(
-        &app,
-        "mascot-menu",
-        tauri::WebviewUrl::App(format!(
-            "index.html?win=mascotmenu&v={v}&fx={anchor_x}&fy={anchor_y}"
-        ).into()),
-    )
-    .title("WorkTop Menu")
-    .inner_size(menu_w, menu_h)
-    .position(x, y)
-    .transparent(true)
-    .decorations(false)
-    .resizable(false)
-    .shadow(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .focused(true)
-    .visible(false)
-    .background_color(tauri::window::Color(0, 0, 0, 0))
-    .build()
-    .map_err(|e| AppError::new("internal", format!("创建菜单窗口失败：{e}")))?;
-
-    // 菜单窗创建成功后再搬形象，避免建窗失败把形象留在错位处。
+    // 记住展开前的吸附位置（只在「菜单未展开」时记，避免连续打开覆盖成锚点位置）
     if let Ok(mut pre) = PRE_MENU_MASCOT_POS.lock() {
-        *pre = Some((mx, myp));
+        if pre.is_none() {
+            *pre = Some((mx, myp));
+        }
     }
-    let _ = m.set_position(tauri::LogicalPosition::new(target_mx, target_my));
 
+    // 先摆好窗与球，再一次性显示：顺序反过来会看到「菜单先出来、球后跳过去」
+    let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+    let _ = m.set_position(tauri::LogicalPosition::new(target_mx, target_my));
     let _ = win.show();
     let _ = win.set_focus();
+    // 通知前端重播扫出动画（复用同一个 webview，挂载时不会再自动播）
+    let _ = win.emit("mascot-menu:show", ());
+
+    #[cfg(debug_assertions)]
+    eprintln!("[mascot] menu open in {}ms", t0.elapsed().as_millis());
     Ok(())
 }
 
 #[tauri::command]
+pub async fn mascot_menu_open(app: tauri::AppHandle) -> AppResult<()> {
+    menu_open_sync(&app)
+}
+
+#[tauri::command]
 pub fn mascot_menu_close(app: tauri::AppHandle) -> AppResult<()> {
+    // 只隐藏不销毁：下次点开是「秒开」，不用重新建窗、重新加载前端
     if let Some(win) = app.get_webview_window("mascot-menu") {
-        let _ = win.close();
+        let _ = win.hide();
     }
     // 收起后把形象放回展开前的吸附位置。
     if let Ok(mut pre) = PRE_MENU_MASCOT_POS.lock() {

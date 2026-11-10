@@ -5,7 +5,7 @@ import { call } from "../lib/api"
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog"
 import { convertFileSrc, invoke } from "@tauri-apps/api/core"
 import { emit as emitTauri } from "@tauri-apps/api/event"
-import { askConfirm } from "../lib/ui"
+import { askConfirm, askPrompt } from "../lib/ui"
 import {
   autoPick,
   dockWindowSize,
@@ -21,8 +21,25 @@ import {
   type DockPosition,
 } from "../lib/dock"
 import { toast } from "../lib/ui"
+import {
+  clearGuardPassword,
+  guard,
+  GUARD_MODULES,
+  lockGuard,
+  refreshGuard,
+  setGuardModules,
+  setGuardPassword,
+  type GuardModule,
+} from "../lib/guard"
 import { CARD_KEYS, mergeConfig, type AppConfig, type CardKey } from "../lib/config"
 import type { Lang, T } from "../i18n"
+import { check as updaterCheck, type Update } from "@tauri-apps/plugin-updater"
+import { relaunch as updaterRelaunch } from "@tauri-apps/plugin-process"
+import {
+  disable as autoStartOff,
+  enable as autoStartOn,
+  isEnabled as autoStartIsOn,
+} from "@tauri-apps/plugin-autostart"
 import Icon from "../components/Icon.vue"
 import ToggleSwitch from "../components/ToggleSwitch.vue"
 
@@ -32,10 +49,79 @@ const emit = defineEmits<{ "set-mode": [m: string]; "set-accent": [a: string]; "
 const props = defineProps<{
   mode: string
   accent: string
-  initialTab?: "appearance" | "dock" | "desktop" | "about"
+  initialTab?: "appearance" | "dock" | "desktop" | "guard" | "about"
 }>()
 
-const tab = ref<"appearance" | "dock" | "desktop" | "about">(props.initialTab ?? "appearance")
+const tab = ref<"appearance" | "dock" | "desktop" | "guard" | "about">(props.initialTab ?? "appearance")
+
+/* ---------- 模块锁（门禁） ---------- */
+const pwCurrent = ref("")
+const pwNew = ref("")
+const pwConfirm = ref("")
+const guardBusy = ref(false)
+
+onMounted(() => {
+  void refreshGuard()
+})
+
+async function toggleGuardModule(m: GuardModule) {
+  const next = guard.value.modules.includes(m)
+    ? guard.value.modules.filter((x) => x !== m)
+    : [...guard.value.modules, m]
+  try {
+    await setGuardModules(next as GuardModule[])
+    toast(t.value("guard_saved"))
+  } catch (e) {
+    toast(String((e as Error).message), true)
+  }
+}
+
+async function saveGuardPassword() {
+  if (pwNew.value.length < 4) return toast(t.value("guard_pw_short"), true)
+  if (pwNew.value !== pwConfirm.value) return toast(t.value("guard_pw_mismatch"), true)
+  guardBusy.value = true
+  try {
+    await setGuardPassword(guard.value.enabled ? pwCurrent.value : null, pwNew.value)
+    pwCurrent.value = ""
+    pwNew.value = ""
+    pwConfirm.value = ""
+    toast(t.value("guard_saved"))
+  } catch (e) {
+    toast(String((e as Error).message), true)
+  } finally {
+    guardBusy.value = false
+  }
+}
+
+async function lockAll() {
+  try {
+    await lockGuard()
+    toast(t.value("guard_locked_toast"))
+  } catch (e) {
+    toast(String((e as Error).message), true)
+  }
+}
+
+async function disableGuard() {
+  const pw = await askPrompt({
+    title: t.value("guard_disable"),
+    message: t.value("guard_current"),
+    inputType: "password",
+    danger: true,
+    okText: t.value("guard_disable"),
+  })
+  if (typeof pw !== "string" || !pw) return
+  guardBusy.value = true
+  try {
+    await clearGuardPassword(pw)
+    pwCurrent.value = ""
+    toast(t.value("guard_disabled_toast"))
+  } catch (e) {
+    toast(String((e as Error).message), true)
+  } finally {
+    guardBusy.value = false
+  }
+}
 
 /* ---------- 桌面 Dock ---------- */
 const dockCfg = ref<DockConfig>(readDockConfig())
@@ -80,8 +166,9 @@ function persistDock(next: DockConfig) {
 
 async function syncDockWindow(cfg: DockConfig) {
   if (!cfg.enabled) {
-    await invoke("dock_close").catch(() => {})
+    // 先广播配置让 Dock 窗口自行收尾，再关窗（关 Dock 时任务栏还原由 Rust 端兜底）
     await emitTauri("pwb-dock-config", cfg)
+    await invoke("dock_close").catch(() => {})
     return
   }
   const list = cfg.apps.length
@@ -134,8 +221,110 @@ async function saveDesk(patch: Record<string, unknown>) {
   }
 }
 const setDeskEnabled = (v: boolean) => saveDesk({ enabled: v })
+
+/* ---------- 开机启动（Windows 登录项） ---------- */
+const autoStart = ref(false)
+const autoStartBusy = ref(false)
+async function loadAutoStart() {
+  try {
+    autoStart.value = await autoStartIsOn()
+  } catch {
+    /* 非 Tauri 环境（qa 预览）静默跳过 */
+  }
+}
+async function setAutoStart(v: boolean) {
+  if (autoStartBusy.value) return
+  autoStartBusy.value = true
+  try {
+    if (v) await autoStartOn()
+    else await autoStartOff()
+    autoStart.value = await autoStartIsOn()
+    toast(autoStart.value ? "已开启开机启动" : "已关闭开机启动")
+  } catch (e) {
+    toast(String((e as Error)?.message ?? e), true)
+    autoStart.value = await autoStartIsOn().catch(() => false)
+  } finally {
+    autoStartBusy.value = false
+  }
+}
 const setCard = (k: CardKey, v: boolean) => saveDesk({ cards: { ...deskCfg.value.cards, [k]: v } })
 const setCardFont = (v: number) => saveDesk({ cardFontScale: v })
+
+/* ---------- 在线更新（GitHub Releases） ---------- */
+type UpdState = "idle" | "checking" | "latest" | "available" | "downloading" | "ready" | "error"
+const updState = ref<UpdState>("idle")
+const updPct = ref(0)
+const updNewVer = ref("")
+const updNotes = ref("")
+const updErr = ref("")
+let updPending: Update | null = null
+
+const updBusy = computed(() => updState.value === "checking" || updState.value === "downloading")
+const updBadge = computed(() => {
+  switch (updState.value) {
+    case "checking": return t.value("upd_checking")
+    case "latest": return t.value("upd_latest")
+    case "available": return `${t.value("upd_available")} v${updNewVer.value}`
+    case "downloading": return `${t.value("upd_downloading")} ${updPct.value}%`
+    case "ready": return `${t.value("upd_ready")} v${updNewVer.value}`
+    case "error": return t.value("upd_fail")
+    default: return `v${version.value}`
+  }
+})
+
+async function checkUpdate() {
+  if (updBusy.value) return
+  updState.value = "checking"
+  updErr.value = ""
+  try {
+    const u = await updaterCheck()
+    if (!u) {
+      updPending = null
+      updState.value = "latest"
+      return
+    }
+    updPending = u
+    updNewVer.value = u.version
+    updNotes.value = (u.body ?? "").trim()
+    updState.value = "available"
+  } catch (e) {
+    const raw = String((e as Error)?.message ?? e)
+    const low = raw.toLowerCase()
+    // 仓库还没发布过带 latest.json 的 Release 时，插件只会给一句 fetch 错误——换成能看懂的说明
+    const noFeed = low.includes("valid release json") || low.includes("404") || low.includes("not found")
+    updErr.value = noFeed ? t.value("upd_nofeed") : raw
+    updState.value = "error"
+  }
+}
+
+async function installUpdate() {
+  if (!updPending || updBusy.value) return
+  updState.value = "downloading"
+  updPct.value = 0
+  let total = 0
+  let got = 0
+  try {
+    await updPending.downloadAndInstall((ev) => {
+      if (ev.event === "Started") total = ev.data.contentLength ?? 0
+      else if (ev.event === "Progress") {
+        got += ev.data.chunkLength
+        if (total > 0) updPct.value = Math.min(100, Math.round((got / total) * 100))
+      } else if (ev.event === "Finished") updPct.value = 100
+    })
+    updState.value = "ready"
+  } catch (e) {
+    updErr.value = String((e as Error)?.message ?? e)
+    updState.value = "error"
+  }
+}
+
+async function restartForUpdate() {
+  try {
+    await updaterRelaunch()
+  } catch (e) {
+    toast(String((e as Error)?.message ?? e), true)
+  }
+}
 
 const dataRoot = ref("")
 const version = ref("")
@@ -146,6 +335,7 @@ onMounted(async () => {
     version.value = info.version
   } catch {}
   if (!dockApps.value.length) void scanApps(false)
+  void loadAutoStart()
   try {
     const st = await invoke<{ config: Record<string, unknown> }>("desktop_state")
     deskCfg.value = mergeConfig(st.config)
@@ -187,6 +377,7 @@ async function changeDataRoot() {
       <button class="pwb-seg-item" :class="{ on: tab === 'appearance' }" @click="tab = 'appearance'">{{ t("set_tab_appearance") }}</button>
       <button class="pwb-seg-item" :class="{ on: tab === 'dock' }" @click="tab = 'dock'">桌面 Dock</button>
       <button class="pwb-seg-item" :class="{ on: tab === 'desktop' }" @click="tab = 'desktop'">桌面卡片</button>
+      <button class="pwb-seg-item" :class="{ on: tab === 'guard' }" @click="tab = 'guard'">{{ t("guard_tab") }}</button>
       <button class="pwb-seg-item" :class="{ on: tab === 'about' }" @click="tab = 'about'">{{ t("set_tab_about") }}</button>
     </div>
 
@@ -237,6 +428,16 @@ async function changeDataRoot() {
         桌面壳模式开启时主窗口隐藏，桌面只留卡片、Dock 与吉祥物；关闭后回到传统工作台窗口
       </div>
 
+      <div class="desk-row">
+        <div class="desk-row-main">
+          <div class="desk-row-title">开机自动启动</div>
+          <div class="muted" style="font-size: 11.5px; margin-top: 3px">
+            登录 Windows 后在后台静默启动（桌面壳模式下不弹工作台窗口）{{ autoStart ? "，当前已加入登录项" : "" }}
+          </div>
+        </div>
+        <ToggleSwitch :model-value="autoStart" label="开机启动" @update:model-value="setAutoStart" />
+      </div>
+
       <div class="dock-row">
         <span class="dock-label">卡片字号</span>
         <input type="range" min="0.8" max="1.6" step="0.05" :value="deskCfg.cardFontScale"
@@ -255,6 +456,56 @@ async function changeDataRoot() {
           <span>{{ CARD_LABELS[k] }}</span>
         </button>
       </div>
+    </div>
+
+    <!-- 安全：模块锁（门禁，不改动文件内容） -->
+    <div v-else-if="tab === 'guard'">
+      <div class="dock-hero">
+        <div>
+          <div class="dock-hero-title">{{ t("guard_title") }}</div>
+          <div class="muted" style="font-size: 11.5px; margin-top: 3px">{{ t("guard_desc") }}</div>
+        </div>
+        <span class="guard-state" :class="{ on: guard.enabled }">
+          {{ guard.enabled ? t("guard_on") : t("guard_off") }}
+        </span>
+      </div>
+
+      <template v-if="!guard.enabled">
+        <div class="muted" style="font-size: 11.5px; margin: 10px 0">{{ t("guard_no_pw_desc") }}</div>
+        <div class="guard-form">
+          <input v-model="pwNew" type="password" :placeholder="t('guard_new')" autocomplete="new-password">
+          <input v-model="pwConfirm" type="password" :placeholder="t('guard_confirm')" autocomplete="new-password"
+            @keydown.enter="saveGuardPassword">
+          <button class="primary" :disabled="guardBusy" @click="saveGuardPassword">{{ t("guard_set") }}</button>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="dock-apps-head"><span class="dock-label">{{ t("guard_modules") }}</span></div>
+        <div class="muted" style="font-size: 11.5px; margin: -2px 0 8px">{{ t("guard_modules_desc") }}</div>
+        <div class="desk-card-grid">
+          <button v-for="m in GUARD_MODULES" :key="m" class="desk-card-item"
+            :class="{ on: guard.modules.includes(m) }" @click="toggleGuardModule(m)">
+            <Icon :name="guard.modules.includes(m) ? 'check' : 'plus'" :size="13" />
+            <span>{{ t(`guard_mod_${m}`) }}</span>
+          </button>
+        </div>
+
+        <div class="dock-apps-head" style="margin-top: 16px"><span class="dock-label">{{ t("guard_change") }}</span></div>
+        <div class="guard-form">
+          <input v-model="pwCurrent" type="password" :placeholder="t('guard_current')" autocomplete="current-password">
+          <input v-model="pwNew" type="password" :placeholder="t('guard_new')" autocomplete="new-password">
+          <input v-model="pwConfirm" type="password" :placeholder="t('guard_confirm')" autocomplete="new-password"
+            @keydown.enter="saveGuardPassword">
+          <div class="row" style="gap: 8px; margin-top: 2px; flex-wrap: wrap">
+            <button class="primary" :disabled="guardBusy" @click="saveGuardPassword">{{ t("save") }}</button>
+            <button :disabled="guardBusy" @click="lockAll"><Icon name="lock" :size="12" />{{ t("guard_lock_now") }}</button>
+            <button class="ghost mini" :disabled="guardBusy" @click="disableGuard">{{ t("guard_disable") }}</button>
+          </div>
+        </div>
+      </template>
+
+      <div class="muted guard-hint">{{ t("guard_plain_hint") }}</div>
     </div>
 
     <!-- 桌面 Dock -->
@@ -351,6 +602,35 @@ async function changeDataRoot() {
       <div class="muted" style="margin-top: 8px; font-size: 11.5px">
         更改会把全部数据（待办/导航/速记/密钥/资产/AI 会话）迁移到新目录；原目录整体备份保留，不会删除。
       </div>
+
+      <div class="upd-card">
+        <div class="upd-head">
+          <div class="upd-title">{{ t("upd_title") }}</div>
+          <button class="mini" :disabled="updBusy" @click="checkUpdate">
+            <Icon name="refresh" :size="12" />{{ updState === "checking" ? t("upd_checking") : t("upd_check") }}
+          </button>
+        </div>
+        <div class="upd-line">
+          <span class="upd-badge" :class="updState">{{ updBadge }}</span>
+          <span v-if="updState === 'idle'" class="muted upd-note">{{ t("upd_idle") }}</span>
+          <span v-else-if="updState === 'error'" class="upd-note err">{{ updErr }}</span>
+        </div>
+
+        <div v-if="updState === 'available'" class="upd-body">
+          <div v-if="updNotes" class="upd-notes">{{ updNotes }}</div>
+          <button class="primary mini" @click="installUpdate">{{ t("upd_install") }}</button>
+        </div>
+
+        <div v-if="updState === 'downloading'" class="upd-bar"><i :style="{ width: updPct + '%' }" /></div>
+
+        <div v-if="updState === 'ready'" class="upd-body">
+          <button class="primary mini" @click="restartForUpdate">
+            <Icon name="refresh" :size="12" />{{ t("upd_restart") }}
+          </button>
+        </div>
+
+        <div class="muted upd-hint">{{ t("upd_hint") }}</div>
+      </div>
     </div>
   </div>
 </template>
@@ -359,6 +639,29 @@ async function changeDataRoot() {
 .settings { padding: 2px; }
 .swatch-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .about-card { background: var(--pwb-panel); border-radius: 12px; padding: 14px; }
+.desk-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--pwb-panel); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+.desk-row-main { min-width: 0; }
+.desk-row-title { font-size: 13px; font-weight: 600; }
+/* 在线更新 */
+.upd-card { margin-top: 14px; background: var(--pwb-panel); border-radius: 12px; padding: 12px 14px; }
+.upd-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.upd-title { font-size: 13px; font-weight: 600; }
+.upd-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.upd-badge { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; background: var(--pwb-chip); color: var(--pwb-muted); }
+.upd-badge.available,
+.upd-badge.ready { background: var(--pwb-tag-bg); color: var(--pwb-accent); font-weight: 600; }
+.upd-badge.error { background: var(--pwb-bad-bg); color: var(--pwb-bad-fg); }
+.upd-badge.checking,
+.upd-badge.downloading { background: var(--pwb-tag-bg); color: var(--pwb-accent); }
+.upd-note { font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.upd-note.err { color: var(--pwb-bad-fg); white-space: normal; word-break: break-all; }
+.upd-body { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.upd-notes { font-size: 11.5px; line-height: 1.7; color: var(--pwb-muted); white-space: pre-wrap;
+  max-height: 120px; overflow: auto; width: 100%; }
+.upd-bar { margin-top: 10px; height: 4px; border-radius: 999px; background: var(--pwb-chip); overflow: hidden; }
+.upd-bar i { display: block; height: 100%; border-radius: 999px; background: var(--pwb-accent); transition: width 0.2s; }
+.upd-hint { font-size: 11px; line-height: 1.6; margin-top: 10px; }
 .about-name { font-size: 14px; font-weight: 600; }
 
 .dock-hero { display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -382,5 +685,11 @@ async function changeDataRoot() {
   background: transparent; border-radius: 8px; cursor: pointer; font-size: 12.5px; color: inherit; text-align: left; }
 .desk-card-item:hover { background: var(--pwb-hover); }
 .desk-card-item.on { background: var(--pwb-tag-bg); font-weight: 600; }
+/* 模块锁 */
+.guard-state { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--pwb-chip); color: var(--pwb-muted); }
+.guard-state.on { background: var(--pwb-tag-bg); color: var(--pwb-accent); }
+.guard-form { display: flex; flex-direction: column; gap: 8px; max-width: 320px; }
+.guard-form input { width: 100%; }
+.guard-hint { font-size: 11.5px; line-height: 1.65; margin-top: 14px; }
 
 </style>

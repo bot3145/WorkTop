@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // 密钥文档卡片：只显示元信息（名称/字数），内容不进卡片窗口；点击打开工作台。
-import { onMounted, ref } from "vue"
+import { computed, onMounted, ref, watch } from "vue"
 import { invoke } from "@tauri-apps/api/core"
 import WidgetShell from "../WidgetShell.vue"
 import Icon from "../Icon.vue"
+import { isLocked, refreshGuard } from "../../lib/guard"
 
 const emit = defineEmits<{ "open-app": [id: string] }>()
 
@@ -15,8 +16,9 @@ interface KeyDocMeta {
 }
 
 const docs = ref<KeyDocMeta[]>([])
+const locked = computed(() => isLocked("keys"))
 
-onMounted(async () => {
+async function load() {
   try {
     const list = await invoke<KeyDocMeta[]>("keysdocs_meta")
     const seen = new Set<string>()
@@ -27,12 +29,24 @@ onMounted(async () => {
       return true
     })
   } catch {}
+}
+
+onMounted(async () => {
+  await refreshGuard()
+  if (!locked.value) await load()
+})
+
+// 上锁就清掉清单；解锁后补拉一次
+watch(locked, (v) => {
+  if (v) docs.value = []
+  else void load()
 })
 </script>
 
 <template>
   <WidgetShell id="keys" caption="密钥文档" :width="290">
-    <div v-if="docs.length" class="kd-list">
+    <div v-if="locked" class="kd-empty"><Icon name="lock" :size="12" /> 已上锁，打开面板输入口令</div>
+    <div v-else-if="docs.length" class="kd-list">
       <button v-for="d in docs" :key="d.name + d.ext" class="kd-row" @click="emit('open-app', 'keys')">
         <Icon name="file" :size="13" />
         <span class="kd-name">{{ d.name }}<span v-if="d.ext === 'txt'" class="kd-ext">.txt</span></span>
@@ -40,7 +54,7 @@ onMounted(async () => {
       </button>
     </div>
     <div v-else class="kd-empty">还没有密钥文档</div>
-    <button class="kd-more" @click="emit('open-app', 'keys')">{{ docs.length }} 份文档 →</button>
+    <button class="kd-more" @click="emit('open-app', 'keys')">{{ locked ? "输入口令查看 →" : `${docs.length} 份文档 →` }}</button>
   </WidgetShell>
 </template>
 
@@ -54,7 +68,7 @@ onMounted(async () => {
 .kd-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kd-ext { color: #a5a5aa; font-size: 10.5px; }
 .kd-chars { margin-left: auto; font-size: 10.5px; color: #a5a5aa; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.kd-empty { font-size: 12px; color: #6e6e73; padding: 4px 0; }
+.kd-empty { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6e6e73; padding: 4px 0; }
 .kd-more { border: none; background: transparent; color: #1f7a3d; font: inherit; font-size: 11.5px; font-weight: 500;
   cursor: pointer; padding: 5px 0 0; height: auto; }
 .kd-more:hover { text-decoration: underline; }

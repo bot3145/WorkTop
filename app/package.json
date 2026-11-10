@@ -1,7 +1,7 @@
 {
   "name": "worktop",
   "private": true,
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Worktop — 本地优先的个人工作台桌面版：待办/导航/资产/凭据/速记 + 桌面壳、Dock 与桌宠（Tauri 2 + Vue 3 + Rust）",
   "license": "MIT",
   "author": "Worktop contributors",
@@ -30,7 +30,10 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-autostart": "^2.7.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "vue": "^3.5.44"
   },
   "devDependencies": {
