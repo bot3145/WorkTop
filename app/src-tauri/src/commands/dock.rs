@@ -554,6 +554,29 @@ fn launch_target(
     }
 }
 
+/// 供应用板块复用：把 .exe / .lnk 解析成真实 exe 路径（.url、解析失败返回 None）。
+#[cfg(windows)]
+pub(crate) fn resolved_exe(app: &tauri::AppHandle, path: &str) -> Option<PathBuf> {
+    launch_target(app, path).map(|(exe, _, _)| exe)
+}
+
+/// 供应用板块复用：只拿进程名（小写，含 .exe），用于事后找窗口。
+#[cfg(windows)]
+pub(crate) fn proc_name_of(app: &tauri::AppHandle, path: &str) -> Option<String> {
+    let exe = resolved_exe(app, path)?;
+    let name = exe.file_name()?.to_string_lossy().to_lowercase();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn proc_name_of(_app: &tauri::AppHandle, _path: &str) -> Option<String> {
+    None
+}
+
 /// 极简命令行参数切分：空白分隔，支持双引号包裹的整段参数。
 #[cfg(windows)]
 fn split_args(s: &str) -> Vec<String> {
@@ -578,8 +601,10 @@ fn split_args(s: &str) -> Vec<String> {
 }
 
 /// 点击 Dock 图标的统一入口：未运行 → 启动；运行中已最小化 → 恢复并前置；运行中 → 最小化。
+/// `maximized = true`（双击图标）= 启动后全屏（最大化），已运行则直接前置并最大化，不再切最小化。
 #[tauri::command]
-pub fn dock_toggle(app: tauri::AppHandle, path: String) -> AppResult<String> {
+pub fn dock_toggle(app: tauri::AppHandle, path: String, maximized: Option<bool>) -> AppResult<String> {
+    let want_max = maximized.unwrap_or(false);
     #[cfg(windows)]
     {
         let exe = launch_target(&app, &path)
@@ -596,7 +621,21 @@ pub fn dock_toggle(app: tauri::AppHandle, path: String) -> AppResult<String> {
         let windows = find_app_windows(&proc_name);
         if windows.is_empty() {
             launch_app(&app, &path)?;
+            if want_max {
+                if proc_name.ends_with(".lnk") || proc_name.ends_with(".url") {
+                    // 解析不出真实 exe（桌面快捷方式常见）：启动后再在后台解析并最大化
+                    maximize_after_launch(path.clone(), 8000);
+                } else {
+                    show_maximized_when_ready(proc_name, 6000);
+                }
+            }
             return Ok("launched".into());
+        }
+        if want_max {
+            // 双击：不切换最小化，直接把窗口顶到前面并最大化
+            if focus_maximize(&proc_name) {
+                return Ok("maximized".into());
+            }
         }
         unsafe {
             // 优先级：前台窗口 → 任一未最小化窗口（最小化它）；全部已最小化 → 恢复 Z 序最前（最近活跃）的那个。
@@ -623,6 +662,7 @@ pub fn dock_toggle(app: tauri::AppHandle, path: String) -> AppResult<String> {
     }
     #[cfg(not(windows))]
     {
+        let _ = want_max;
         launch_app(&app, &path)?;
         Ok("launched".into())
     }
@@ -683,9 +723,103 @@ fn find_app_windows(proc_name_lc: &str) -> Vec<isize> {
     FOUND.with(|f| f.borrow().clone())
 }
 
+/// 把目标进程的窗口顶到前面并最大化；没有窗口返回 false。
+/// 供「双击应用图标 = 全屏打开」使用：已运行的应用只前置最大化，不再起第二个实例。
+#[cfg(windows)]
+pub(crate) fn focus_maximize(proc_name_lc: &str) -> bool {
+    let windows = find_app_windows(proc_name_lc);
+    // Z 序第一个 = 最近活跃；优先它，避免多窗口应用里挑错
+    let Some(&h) = windows.first() else {
+        return false;
+    };
+    unsafe {
+        if win_toggle::IsIconic(h) != 0 {
+            win_toggle::ShowWindow(h, win_toggle::SW_RESTORE);
+        }
+        win_toggle::ShowWindow(h, win_toggle::SW_MAXIMIZE);
+        win_toggle::SetForegroundWindow(h);
+    }
+    true
+}
+
+/// 启动后等窗口出现再最大化（新启动的应用要几百毫秒到几秒才建窗）。
+#[cfg(windows)]
+pub(crate) fn show_maximized_when_ready(proc_name_lc: String, wait_ms: u64) {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+        loop {
+            if focus_maximize(&proc_name_lc) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+    });
+}
+
+/// .lnk 的目标 exe（COM 解析，约 300–500ms）。只在后台线程里用，别挡启动。
+#[cfg(windows)]
+fn resolve_lnk_target(path: &str) -> Option<PathBuf> {
+    if !path.to_ascii_lowercase().ends_with(".lnk") {
+        return None;
+    }
+    let quoted = path.replace('\'', "''");
+    let script = format!(
+        "$s=New-Object -ComObject WScript.Shell; try{{$s.CreateShortcut('{quoted}').TargetPath}}catch{{}}"
+    );
+    let out = hidden_command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    let target = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if target.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(target))
+    }
+}
+
+/// 启动后「事后解析」再最大化：应用板块里多是 .lnk，启动前解析会把启动拖慢几百毫秒，
+/// 所以整段放进后台线程——先解析目标 exe，再轮询它的窗口。
+#[cfg(windows)]
+pub(crate) fn maximize_after_launch(path: String, wait_ms: u64) {
+    std::thread::spawn(move || {
+        let Some(exe) = resolve_lnk_target(&path) else {
+            return;
+        };
+        let Some(name) = exe.file_name().map(|n| n.to_string_lossy().to_lowercase()) else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+        loop {
+            if focus_maximize(&name) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub(crate) fn focus_maximize(_proc_name_lc: &str) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub(crate) fn show_maximized_when_ready(_proc_name_lc: String, _wait_ms: u64) {}
+
+#[cfg(not(windows))]
+pub(crate) fn maximize_after_launch(_path: String, _wait_ms: u64) {}
+
 #[cfg(windows)]
 mod win_toggle {
     pub const SW_MINIMIZE: i32 = 6;
+    pub const SW_MAXIMIZE: i32 = 3;
     pub const SW_RESTORE: i32 = 9;
     pub const GWL_EXSTYLE: i32 = -20;
     pub const WS_EX_TOOLWINDOW: i32 = 0x0000_0080;

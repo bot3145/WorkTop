@@ -147,6 +147,12 @@ function onBarDown(e: PointerEvent) {
   void win.startDragging().catch(() => {})
 }
 
+/** 双击标题栏 = 全屏 / 还原（所有板块共用这一条标题栏，所以一处生效即全部生效） */
+function onBarDblClick(e: MouseEvent) {
+  if ((e.target as HTMLElement).closest("button")) return
+  void toggleMax()
+}
+
 /* ---------- Toast / Promise 对话框宿主（面板共用） ---------- */
 const dlgText = ref("")
 const dlgChecked = ref(false)
@@ -162,15 +168,21 @@ const submitDlg = () => {
   closeDlg(dlg.checkboxLabel ? { text: dlgText.value, checked: dlgChecked.value } : dlg.kind === "prompt" ? dlgText.value : true)
 }
 
+let unMax: (() => void) | null = null
 onMounted(() => {
   document.title = title.value
   // 任务栏/Alt-Tab 里显示本地化标题（builder 里只能给 ASCII 兜底名）
   void win.setTitle(title.value).catch(() => {})
   window.addEventListener("keydown", onKey)
+  // 引脚状态跟窗口实际状态对齐：从卡片双击进来时窗口由后端直接最大化
+  const syncMax = () => void win.isMaximized().then((v) => (maximized.value = v)).catch(() => {})
+  syncMax()
+  void win.onResized(syncMax).then((off) => (unMax = off)).catch(() => {})
 })
 onUnmounted(() => {
   media.removeEventListener("change", computeDark)
   window.removeEventListener("keydown", onKey)
+  unMax?.()
 })
 watchEffect(() => {
   document.title = title.value
@@ -180,7 +192,7 @@ watchEffect(() => {
 
 <template>
   <div class="pwb pane-root" :class="{ 'pwb-dark': dark, 'pwb-pink': accent === 'pink', 'pwb-green': accent === 'green', maximized }">
-    <header class="pane-bar" @pointerdown="onBarDown">
+    <header class="pane-bar" :title="tc('pane_dbl_tip')" @pointerdown="onBarDown" @dblclick="onBarDblClick">
       <div class="pane-title"><Icon :name="appDef(appId)?.icon ?? 'file'" :size="13" /><span>{{ title }}</span></div>
       <div class="spacer" />
       <button class="pane-btn" :title="tc('win_min')" @click="minimize"><Icon name="minus" :size="12" /></button>

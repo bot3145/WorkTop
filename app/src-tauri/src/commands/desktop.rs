@@ -66,6 +66,8 @@ pub fn desktop_save(
 
 /// 创建/显示吉祥物窗（透明、无边框、置顶、跳过任务栏）。
 /// 折叠状态（mascotFolded/mascotEdge/mascotY）下窗口中心越出屏幕边缘，只露半个星球。
+/// 位置一律物理像素：配置里 x/y/mascotY 在 mascotPhysical=true 时是物理值，
+/// 旧数据（无标记）是主屏逻辑值，恢复时 × 主屏缩放迁移，再钳制进所在屏工作区。
 pub fn show_mascot(app: &tauri::AppHandle) -> AppResult<()> {
     // 吉祥物窗口 52×52 逻辑像素（x-hub 球体 48px 视觉档；构图见前端 MascotWindow.vue；改尺寸需同步）
     if let Some(win) = app.get_webview_window("mascot") {
@@ -73,61 +75,86 @@ pub fn show_mascot(app: &tauri::AppHandle) -> AppResult<()> {
         let _ = win.set_always_on_top(true);
         return Ok(());
     }
-    let monitor = app
-        .primary_monitor()
-        .map_err(|e| AppError::new("internal", format!("读取显示器失败：{e}")))?
-        .ok_or_else(|| AppError::new("internal", "未检测到显示器"))?;
-    let ms = monitor.scale_factor();
-    let area = monitor.work_area();
-    let sw = area.size.width as f64 / ms;
-    let sh = area.size.height as f64 / ms;
-    let ax = area.position.x as f64 / ms;
-    let ay = area.position.y as f64 / ms;
+    #[cfg(windows)]
+    {
+        let state = app.state::<AppState>();
+        let cfg = cfg_of(&state);
+        let monitor = app
+            .primary_monitor()
+            .map_err(|e| AppError::new("internal", format!("读取显示器失败：{e}")))?
+            .ok_or_else(|| AppError::new("internal", "未检测到显示器"))?;
+        let ms = monitor.scale_factor();
+        let physical_cfg = cfg.get("mascotPhysical").and_then(|v| v.as_bool()).unwrap_or(false);
+        let to_phys = |v: f64| -> i32 {
+            if physical_cfg { v.round() as i32 } else { (v * ms).round() as i32 }
+        };
+        let cw = (52.0 * ms).round() as i32;
 
-    let state = app.state::<AppState>();
-    let cfg = cfg_of(&state);
-    let width = 52.0;
-    let height = 52.0;
-    let def_x = ax + sw - width - 16.0;
-    let def_y = ay + sh - height - 16.0;
-    let folded = cfg.get("mascotFolded").and_then(|v| v.as_bool()).unwrap_or(false);
-    let edge = cfg.get("mascotEdge").and_then(|v| v.as_str()).unwrap_or("right");
-    let my = cfg.get("mascotY").and_then(|v| v.as_f64());
-    let (x, y) = if folded {
-        let fx = if edge == "left" { ax - width * 0.5 } else { ax + sw - width * 0.5 };
-        (fx, my.unwrap_or(def_y).clamp(ay, ay + sh - height * 0.5))
-    } else {
-        (
-            cfg.get("x").and_then(|v| v.as_f64()).unwrap_or(def_x).clamp(ax, ax + sw - width * 0.5),
-            cfg.get("y").and_then(|v| v.as_f64()).unwrap_or(def_y).clamp(ay, ay + sh - height * 0.5),
+        let folded = cfg.get("mascotFolded").and_then(|v| v.as_bool()).unwrap_or(false);
+        let edge = cfg.get("mascotEdge").and_then(|v| v.as_str()).unwrap_or("right");
+        let (pax, pay, paw, pah) = {
+            let a = monitor.work_area();
+            (a.position.x as i32, a.position.y as i32, a.size.width as i32, a.size.height as i32)
+        };
+        let def_x = pax + paw - cw - (16.0 * ms).round() as i32;
+        let def_y = pay + pah - cw - (16.0 * ms).round() as i32;
+        let (x, y) = if folded {
+            let y0 = cfg.get("mascotY").and_then(|v| v.as_f64()).map(to_phys).unwrap_or(def_y);
+            // 折叠 x 相对 y 所在屏的工作区边缘计算
+            let (ax, ay, aw, ah) = crate::commands::snip::work_area_of_point_pub(pax + paw / 2, y0);
+            let fx = if edge == "left" { ax - cw / 2 } else { ax + aw - cw / 2 };
+            (fx, y0.clamp(ay, (ay + ah - cw / 2).max(ay)))
+        } else {
+            let x0 = cfg.get("x").and_then(|v| v.as_f64()).map(to_phys).unwrap_or(def_x);
+            let y0 = cfg.get("y").and_then(|v| v.as_f64()).map(to_phys).unwrap_or(def_y);
+            // 钳制进「窗口中心所在屏」的工作区（跨屏保存的位置原样恢复）
+            let (ax, ay, aw, ah) = crate::commands::snip::work_area_of_point_pub(x0 + cw / 2, y0 + cw / 2);
+            (x0.clamp(ax, (ax + aw - cw / 2).max(ax)), y0.clamp(ay, (ay + ah - cw / 2).max(ay)))
+        };
+
+        let v = now_ms();
+        let win = tauri::WebviewWindowBuilder::new(
+            app,
+            "mascot",
+            tauri::WebviewUrl::App(format!("index.html?win=mascot&v={v}").into()),
         )
-    };
-
-    let v = now_ms();
-    let win = tauri::WebviewWindowBuilder::new(
-        app,
-        "mascot",
-        tauri::WebviewUrl::App(format!("index.html?win=mascot&v={v}").into()),
-    )
-    .title("WorkTop")
-    .inner_size(width, height)
-    .position(x, y)
-    .transparent(true)
-    .decorations(false)
-    .resizable(false)
-    .shadow(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .focused(false)
-    .visible(false)
-    .background_color(tauri::window::Color(0, 0, 0, 0))
-    .build()
-    .map_err(|e| {
-        eprintln!("[mascot] build failed: {e}");
-        AppError::new("internal", format!("创建吉祥物窗口失败：{e}"))
-    })?;
-    let _ = win.show();
-    Ok(())
+        .title("WorkTop")
+        .inner_size(52.0, 52.0)
+        .position(0.0, 0.0)
+        .transparent(true)
+        .decorations(false)
+        .resizable(false)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .build()
+        .map_err(|e| {
+            eprintln!("[mascot] build failed: {e}");
+            AppError::new("internal", format!("创建吉祥物窗口失败：{e}"))
+        })?;
+        // 用 Win32 物理像素定死落点：建窗在 0,0，先摆到位再显示
+        if let Ok(size) = win.outer_size() {
+            if let Ok(hwnd) = win.hwnd() {
+                crate::commands::snip::place_physical(
+                    hwnd.0 as isize,
+                    x,
+                    y,
+                    size.width as i32,
+                    size.height as i32,
+                );
+            }
+        }
+        let _ = win.show();
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -141,6 +168,188 @@ pub fn mascot_close(app: tauri::AppHandle) -> AppResult<()> {
         let _ = win.close();
     }
     Ok(())
+}
+
+/* ---------- 桌宠拖动/折叠/展开：全部物理像素，可跨显示器 ----------
+ *
+ * 原实现把拖动钳制在 currentMonitor 的工作区里，混合 DPI 下球一旦拖到副屏，
+ * 逻辑坐标换算（150%/100% 各自为政）+ 单屏钳制会让它再也回不来——
+ * 这是实测 bug「移动到副屏后移不回来」的根因。现在拖动/折叠/展开/重启恢复全部
+ * 走 Rust 物理像素：光标在哪算哪，跨屏自由；配置里 x/y/mascotY 升级为物理值，
+ * 旧数据用 mascotPhysical 标记区分（缺省 = 旧主屏逻辑值，恢复时 × 主屏缩放）。 */
+
+/// 拖动锚点：(窗口物理位置, 光标物理位置)。
+static MASCOT_DRAG: Mutex<Option<((i32, i32), (i32, i32))>> = Mutex::new(None);
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MascotDragEnd {
+    /// 折叠前的物理位置（展开时回到这里）
+    pub x: i32,
+    pub y: i32,
+    pub folded: bool,
+    /// "left" / "right"（folded=false 时为空串）
+    pub edge: String,
+    /// 折叠态沿用的 y（物理）
+    pub fold_y: i32,
+}
+
+#[tauri::command]
+pub fn mascot_drag_begin(app: tauri::AppHandle) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        let m = app
+            .get_webview_window("mascot")
+            .ok_or_else(|| AppError::not_found("吉祥物窗口不存在"))?;
+        let pos = m
+            .outer_position()
+            .map_err(|e| AppError::new("internal", format!("读取窗口位置失败：{e}")))?;
+        let cur = crate::commands::snip::cursor_pos_pub()?;
+        if let Ok(mut slot) = MASCOT_DRAG.lock() {
+            *slot = Some(((pos.x, pos.y), cur));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err(AppError::validation("仅支持 Windows。"))
+    }
+}
+
+#[tauri::command]
+pub fn mascot_drag_update(app: tauri::AppHandle) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        let anchor = MASCOT_DRAG.lock().map(|s| *s).map_err(|_| AppError::new("internal", "拖动状态锁已损坏。"))?;
+        let Some(((wx, wy), (cx0, cy0))) = anchor else {
+            return Ok(()); // 没有拖动锚点（异常时序），安静忽略
+        };
+        let m = app
+            .get_webview_window("mascot")
+            .ok_or_else(|| AppError::not_found("吉祥物窗口不存在"))?;
+        let (cx, cy) = crate::commands::snip::cursor_pos_pub()?;
+        let size = m
+            .outer_size()
+            .map_err(|e| AppError::new("internal", format!("读取窗口尺寸失败：{e}")))?;
+        let (w, h) = (size.width as i32, size.height as i32);
+        let (tx, ty) = (wx + cx - cx0, wy + cy - cy0);
+        // 以窗口中心所在屏的工作区钳制：纵向整只可见（底部可露半高），
+        // 横向允许藏进边缘（40%/60% 与原实现的视觉档一致）。
+        let (ax, ay, aw, ah) = crate::commands::snip::work_area_of_point_pub(tx + w / 2, ty + h / 2);
+        let x_min = ax - w * 2 / 5;
+        let x_max = ax + aw - w * 3 / 5;
+        let tx = if x_min <= x_max { tx.clamp(x_min, x_max) } else { tx.clamp(x_max, x_min) };
+        let ty = ty.clamp(ay, (ay + ah - h / 2).max(ay));
+        if let Ok(hwnd) = m.hwnd() {
+            crate::commands::snip::place_physical(hwnd.0 as isize, tx, ty, w, h);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err(AppError::validation("仅支持 Windows。"))
+    }
+}
+
+/// 拖动结束：清锚点；靠边（按所在屏缩放 20px）则折叠到该侧并搬过去，
+/// 返回最终状态给前端存配置。折叠阈值用窗口所在屏的缩放换算，视觉与单屏版一致。
+#[tauri::command]
+pub fn mascot_drag_end(app: tauri::AppHandle) -> AppResult<MascotDragEnd> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        let _ = MASCOT_DRAG.lock().map(|mut s| *s = None);
+        let m = app
+            .get_webview_window("mascot")
+            .ok_or_else(|| AppError::not_found("吉祥物窗口不存在"))?;
+        let pos = m
+            .outer_position()
+            .map_err(|e| AppError::new("internal", format!("读取窗口位置失败：{e}")))?;
+        let size = m
+            .outer_size()
+            .map_err(|e| AppError::new("internal", format!("读取窗口尺寸失败：{e}")))?;
+        let scale = m.scale_factor().unwrap_or(1.0);
+        let (w, h) = (size.width as i32, size.height as i32);
+        let (ax, ay, aw, _ah) = crate::commands::snip::work_area_of_point_pub(pos.x + w / 2, pos.y + h / 2);
+        let near = (20.0 * scale).round() as i32;
+        let fold_to = |x: i32| -> MascotDragEnd {
+            if let Ok(hwnd) = m.hwnd() {
+                crate::commands::snip::place_physical(hwnd.0 as isize, x, pos.y, w, h);
+            }
+            MascotDragEnd { x: pos.x, y: pos.y, folded: true, edge: String::new(), fold_y: pos.y }
+        };
+        if ax + aw - (pos.x + w) < near {
+            let mut end = fold_to(ax + aw - w / 2);
+            end.edge = "right".into();
+            Ok(end)
+        } else if pos.x - ax < near {
+            let mut end = fold_to(ax - w / 2);
+            end.edge = "left".into();
+            Ok(end)
+        } else {
+            Ok(MascotDragEnd { x: pos.x, y: pos.y, folded: false, edge: String::new(), fold_y: 0 })
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err(AppError::validation("仅支持 Windows。"))
+    }
+}
+
+/// 展开：按配置里的物理坐标回到折叠前的位置（旧数据按主屏逻辑值迁移），
+/// 返回实际落点（物理）供前端存配置。
+#[tauri::command]
+pub fn mascot_unfold(app: tauri::AppHandle, state: State<'_, AppState>) -> AppResult<(i32, i32)> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        let m = app
+            .get_webview_window("mascot")
+            .ok_or_else(|| AppError::not_found("吉祥物窗口不存在"))?;
+        let cfg = cfg_of(&state);
+        let ms = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|p| p.scale_factor())
+            .unwrap_or(1.0);
+        let physical_cfg = cfg.get("mascotPhysical").and_then(|v| v.as_bool()).unwrap_or(false);
+        let to_phys = |v: f64| -> i32 {
+            if physical_cfg { v.round() as i32 } else { (v * ms).round() as i32 }
+        };
+        let size = m
+            .outer_size()
+            .map_err(|e| AppError::new("internal", format!("读取窗口尺寸失败：{e}")))?;
+        let (w, h) = (size.width as i32, size.height as i32);
+        let (pax, pay, paw, pah) = match app.primary_monitor().ok().flatten() {
+            Some(p) => {
+                let a = p.work_area();
+                (a.position.x as i32, a.position.y as i32, a.size.width as i32, a.size.height as i32)
+            }
+            None => (0, 0, 1920, 1080),
+        };
+        let def_x = pax + paw - w - (16.0 * ms).round() as i32;
+        let def_y = pay + pah - h - (16.0 * ms).round() as i32;
+        let x0 = cfg.get("x").and_then(|v| v.as_f64()).map(to_phys).unwrap_or(def_x);
+        let y0 = cfg.get("y").and_then(|v| v.as_f64()).map(to_phys).unwrap_or(def_y);
+        let (ax, ay, aw, ah) = crate::commands::snip::work_area_of_point_pub(x0 + w / 2, y0 + h / 2);
+        let x = x0.clamp(ax, (ax + aw - w).max(ax));
+        let y = y0.clamp(ay, (ay + ah - h).max(ay));
+        if let Ok(hwnd) = m.hwnd() {
+            crate::commands::snip::place_physical(hwnd.0 as isize, x, y, w, h);
+        }
+        Ok((x, y))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, state);
+        Err(AppError::validation("仅支持 Windows。"))
+    }
 }
 
 /// 建一个**隐藏**的菜单窗（位置在每次打开时再设）。
@@ -298,8 +507,8 @@ pub fn main_hide(app: tauri::AppHandle) -> AppResult<()> {
 
 /* ---------- 桌面卡片窗口（每张卡片一个独立透明窗口，可单独拖动/缩放） ---------- */
 
-/// 卡片窗口的键（与前端 CARD_KEYS 一致）
-const CARD_KEYS: [&str; 9] = ["clock", "calendar", "todo", "notes", "apps", "nav", "assets", "keys", "ai"];
+/// 卡片窗口的键（与前端 CARD_KEYS 一致；clock = 时间+日历组合卡，calendar 已并入）
+const CARD_KEYS: [&str; 8] = ["clock", "todo", "notes", "apps", "nav", "assets", "keys", "ai"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -73,7 +73,7 @@ let settings: Record<string, unknown> = {
     locked: false,
     autonomous: true,
     animationGap: 2,
-    cards: { clock: true, calendar: true, todo: true, notes: true },
+    cards: { clock: true, todo: true, notes: true },
     cardLayout: {},
     toolbar: false,
     dock: false,
@@ -102,6 +102,7 @@ const characters = [
 ]
 
 const dockApps = [
+  { id: "a0", name: "文件管理器", path: "C:/Windows/explorer.exe", kind: "exe", target: "", icon: null, group: "系统" },
   { id: "a1", name: "记事本", path: "C:/Windows/notepad.exe", kind: "exe", target: "", icon: null, group: "系统" },
   { id: "a2", name: "计算器", path: "C:/Windows/System32/calc.exe", kind: "exe", target: "", icon: null, group: "系统" },
   { id: "a3", name: "Edge", path: "C:/Program Files/Edge/msedge.exe", kind: "exe", target: "", icon: null, group: "系统" },
@@ -130,6 +131,8 @@ const errors: string[] = []
 
 const emitted: string[] = []
 const emittedSid: string[] = []
+// 长截图会话的结果槽：对应 Rust 侧 RESULT，take 取走即清空
+let scrollResult: { pngBase64: string; width: number; height: number; pages: number; note: string } | null = null
 function emitTo(event: string, payload: unknown) {
   emitted.push(event)
   emittedSid.push(String((payload as { sessionId?: string })?.sessionId ?? ""))
@@ -174,6 +177,107 @@ function qaSnapshot() {
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   /* ---------- 杂项 ---------- */
   app_info: () => ({ version: "3.0.0-qa", root: "C:/qa" }),
+  data_path_get: () => ({
+    root: "D:\\Projects\\WorkTop\\Local",
+    custom: true,
+    default_root: "C:\\Users\\qa\\AppData\\Roaming\\com.bert.worktop\\data",
+  }),
+  data_path_inspect: (a) => {
+    const p = String(a.path ?? "")
+    if (!p) return { kind: "invalid", reason: "路径不能为空。", files: 0 }
+    if (p.replace(/\\/g, "/") === "D:/Projects/WorkTop/Local") return { kind: "same", reason: "这已经是当前数据目录。", files: 12 }
+    if (/empty$/i.test(p)) return { kind: "empty", reason: "文件夹是空的。", files: 0 }
+    if (/oldpc$/i.test(p)) return { kind: "existing_data", reason: "文件夹里已经有 WorkTop 数据。", files: 12 }
+    return { kind: "non_empty", reason: "文件夹不是空的，但看着不像 WorkTop 数据目录。", files: 3 }
+  },
+  data_path_set: (a) => String(a.newPath ?? ""),
+  data_path_open: () => { calls.push("data_path_open"); return null },
+  snip_capture: () => "native",
+  snip_preview: () => {
+    const c = document.createElement("canvas")
+    c.width = 1280; c.height = 720
+    const g = c.getContext("2d")!
+    const bg = g.createLinearGradient(0, 0, 1280, 720)
+    bg.addColorStop(0, "#dbeafe"); bg.addColorStop(1, "#f5f3ff")
+    g.fillStyle = bg; g.fillRect(0, 0, 1280, 720)
+    g.fillStyle = "rgba(255,255,255,.82)"; g.fillRect(90, 90, 720, 480)
+    g.fillStyle = "#1d4ed8"; g.font = "600 34px Segoe UI"; g.fillText("WorkTop 原生截图", 140, 170)
+    g.fillStyle = "#475569"; g.font = "22px Segoe UI"; g.fillText("拖框选择区域，再试矩形 / 箭头 / 画笔", 140, 225)
+    for (let i = 0; i < 6; i++) { g.fillStyle = `hsl(${210 + i * 12} 70% ${88 - i * 3}%)`; g.fillRect(140, 280 + i * 42, 540 - i * 30, 24) }
+    return { x: 0, y: 0, width: c.width, height: c.height, png_base64: c.toDataURL("image/png").split(",")[1] }
+  },
+  snip_copy_full: () => { calls.push("snip_copy_full"); return "copied" },
+  snip_focus: () => { calls.push("snip_focus"); return null },
+  snip_cursor: () => { calls.push("snip_cursor"); return null },
+  snip_export: (a) => { calls.push("snip_export:" + String(a.action)); return a.action === "save" ? "C:/qa/snip.png" : "copied" },
+  snip_close: () => { calls.push("snip_close"); return null },
+  // 两块屏：用来在浏览器里检查「显示器 1/2」切换 chip 与换屏后重新载入
+  snip_monitors: () => [
+    { x: 0, y: 0, width: 1280, height: 720, primary: true },
+    { x: 1280, y: 0, width: 1280, height: 720, primary: false },
+  ],
+  snip_switch_monitor: (a) => { calls.push("snip_switch_monitor:" + String(a.index)); return Number(a.index) },
+  pin_open: (a) => { calls.push(`pin_open:${String(a.width)}x${String(a.height)}`); return 1 },
+  pin_image: () => { calls.push("pin_image"); return "" },
+  pin_zoom: (a) => { calls.push("pin_zoom:" + String(a.zoom)); return null },
+  pin_move: () => null,
+  pin_close: () => { calls.push("pin_close"); return null },
+  // 假 OCR：给出与 mock 截图标题同位置的几行，用来检查「就地文字层」的对齐与划词
+  snip_ocr: (a) => {
+    calls.push("snip_ocr:" + String(a.pngBase64 ?? "").length)
+    const mk = (text: string, x: number, y: number, h: number, gap: number) => {
+      let cx = x
+      const words = text.split(" ").map((w) => {
+        const box = { text: w, x: cx, y, w: w.length * h * 0.62, h }
+        cx += box.w + gap
+        return box
+      })
+      return { text, x, y, w: cx - x - gap, h, words }
+    }
+    const lines = [
+      mk("WorkTop 原生截图", 140, 140, 34, 10),
+      mk("拖框选择区域，再试矩形 / 箭头 / 画笔", 140, 200, 22, 6),
+      mk("姓名   年龄   城市", 140, 300, 20, 18),
+    ]
+    return { width: 1280, height: 720, text: lines.map((l) => l.text).join("\n"), lines, lang: "zh-Hans-CN" }
+  },
+  // 假长截图（会话式）：start 后异步推 3 帧 progress 再 emit done，take 吐一张比视口高的图，
+  // 用来走查 HUD 实时预览（qa.html?win=scrollhud）与 snip 覆盖层里的长图面板
+  snip_scroll_start: () => {
+    calls.push("snip_scroll_start")
+    const c = document.createElement("canvas")
+    c.width = 900; c.height = 2400
+    const g = c.getContext("2d")!
+    g.fillStyle = "#f8fafc"; g.fillRect(0, 0, c.width, c.height)
+    for (let i = 0; i < 12; i++) {
+      g.fillStyle = i % 2 ? "#e2e8f0" : "#cbd5e1"
+      g.fillRect(60, 60 + i * 190, 780, 150)
+      g.fillStyle = "#334155"; g.font = "600 26px Segoe UI"
+      g.fillText(`第 ${i + 1} 屏内容`, 90, 130 + i * 190)
+    }
+    const png = c.toDataURL("image/png").split(",")[1]
+    const stages = [1, 2, 3]
+    stages.forEach((pages, i) => {
+      setTimeout(() => {
+        emitTo("snip:scroll-progress", { height: 800 * pages, pages, preview: png, auto: true, note: "" })
+        if (i === stages.length - 1) {
+          scrollResult = { pngBase64: png, width: c.width, height: c.height, pages: 3, note: "已拼接 3 屏" }
+          emitTo("snip:scroll-done", null)
+        }
+      }, 350 * (i + 1))
+    })
+    return "started"
+  },
+  snip_scroll_set_auto: (a) => { calls.push("snip_scroll_set_auto:" + String(a.auto)); return null },
+  snip_scroll_finish: () => { calls.push("snip_scroll_finish"); return "finishing" },
+  snip_scroll_cancel: () => { calls.push("snip_scroll_cancel"); emitTo("snip:scroll-cancelled", null); return "cancelling" },
+  snip_scroll_take: () => {
+    calls.push("snip_scroll_take")
+    if (!scrollResult) throw { message: "长截图结果还没有生成。" }
+    const r = scrollResult
+    scrollResult = null
+    return r
+  },
   open_external: (a) => { calls.push("open_external:" + String(a.url)); return null },
   "plugin:event|listen": (args) => {
     listeners.push({ event: String(args.event), handlerId: Number(args.handler) })
@@ -321,7 +425,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return null
   },
   card_positions: (a) => {
-    const all = ["clock", "calendar", "todo", "notes", "apps", "nav", "assets", "keys", "ai"]
+    const all = ["clock", "todo", "notes", "apps", "nav", "assets", "keys", "ai"]
     return all
       .filter((k) => k !== String(a.exclude))
       .map((k) => ({ key: k, x: 800, y: 300, w: 300, h: 240 }))
@@ -490,14 +594,22 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
 
   /* ---------- Dock ---------- */
   dock_scan: () => dockApps,
+  /* ---------- 模块锁（QA 环境按「未启用」处理） ---------- */
+  guard_state_get: () => ({ enabled: false, modules: [], unlocked: [] }),
   dock_open: () => null,
   dock_close: () => null,
   dock_is_open: () => false,
   dock_geometry: () => null,
   dock_running: () => ["C:/Windows/notepad.exe"],
   dock_launch: () => null,
+  dock_toggle: (a) => {
+    calls.push("dock_toggle:" + String(a.path))
+    return "launched"
+  },
   dock_reveal: () => null,
   dock_add_shortcut: (a) => ({ ...dockApps[0], path: String(a.path), name: "新应用" }),
+  workbench_open: () => null,
+  workbench_close: () => null,
 
   /* ---------- 应用启动器（与 Rust AppEntry 同构：file / name / ext / icon） ---------- */
   apps_list: () => ({

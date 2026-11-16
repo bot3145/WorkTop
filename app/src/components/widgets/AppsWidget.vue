@@ -3,6 +3,7 @@
 import { computed, onMounted, ref } from "vue"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core"
 import { toast } from "../../lib/ui"
+import { createClickSplitter } from "../../lib/click"
 import WidgetShell from "../WidgetShell.vue"
 
 const emit = defineEmits<{ "open-app": [id: string] }>()
@@ -59,16 +60,19 @@ const src = (p: string) => {
 }
 
 const busy = ref("")
-async function launch(a: AppEntry) {
+/** 双击 = 全屏：启动（或前置已在运行的窗口）并最大化 */
+async function launch(a: AppEntry, maximized = false) {
   busy.value = a.file
   try {
-    await invoke("apps_launch", { file: a.file })
+    await invoke("apps_launch", { file: a.file, maximized })
   } catch (e) {
     toast(String((e as Error).message ?? e), true)
   } finally {
     busy.value = ""
   }
 }
+const clickSplit = createClickSplitter()
+
 </script>
 
 <template>
@@ -78,7 +82,8 @@ async function launch(a: AppEntry) {
       还没有收藏的应用。打开应用面板，点应用右上角的 ☆ 即可收藏到这里。
     </div>
     <div v-else class="aw-grid">
-      <button v-for="a in shown" :key="a.file" class="aw-app" :title="a.file" @click="launch(a)">
+      <button v-for="a in shown" :key="a.file" class="aw-app" :title="a.file"
+        @click="clickSplit.single(() => launch(a))" @dblclick.stop="clickSplit.double(() => launch(a, true))">
         <img v-if="a.icon" class="aw-ico" :src="src(a.icon)" alt="">
         <span v-else class="aw-ava" :style="{ background: hue(a.name) }">{{ (a.name[0] || "?").toUpperCase() }}</span>
         <span class="aw-name">{{ a.name }}</span>

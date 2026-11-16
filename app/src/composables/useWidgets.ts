@@ -8,7 +8,6 @@ export interface WidgetPos {
 
 const DEFAULTS: Record<string, WidgetPos> = {
   clock: { x: 26, y: 22 },
-  calendar: { x: 500, y: 48 },
   todo: { x: 26, y: 236 },
   notes: { x: 560, y: 332 },
 }

@@ -51,6 +51,7 @@ fn main() {
                 .map_err(|e| format!("无法定位应用数据目录：{e}"))?;
             let root = commands::resolve_root(app_data);
             commands::ensure_layout(&root);
+            let pin_restore_root = root.clone();
             let state = AppState {
                 root: Mutex::new(root),
                 vault_key: Mutex::new(None),
@@ -76,19 +77,11 @@ fn main() {
             app.manage(state);
             let _ = setup_tray(app);
 
-            // 随启动静默拉起 AirSnip（常驻托盘、注册 F1）——之后随时可截图；
-            // 未安装/未拉取时静默跳过（回落内置截图）。放线程避免阻塞启动。
-            {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(1200));
-                    match commands::snip_ensure(handle) {
-                        Ok(true) => eprintln!("[snip_ensure] AirSnip running"),
-                        Ok(false) => eprintln!("[snip_ensure] AirSnip not found (sidecar missing?)"),
-                        Err(e) => eprintln!("[snip_ensure] error: {e}"),
-                    }
-                });
-            }
+            // 贴图恢复：图在 cache/pins/，清单在 pins.json；丢了就当没这张
+            commands::pin::restore_pins(app.handle().clone(), pin_restore_root);
+
+            // 原生截图：自己注册全局 F1（独立消息线程），不启动任何外部截图程序。
+            commands::snip::register_hotkey(app.handle().clone());
 
             // 预热吉祥物弧形菜单窗：现建一个 WebView2 窗口要一两百毫秒，
             // 启动 1.5s 后先在后台把隐藏窗建好，之后点吉祥物只做 set_position + show。
@@ -167,14 +160,38 @@ fn main() {
             commands::open_external,
             commands::pane_open,
             commands::pane_close,
+            commands::workbench_open,
+            commands::workbench_close,
             commands::cursor_pos,
             commands::taskbar_hide,
             commands::taskbar_show,
             commands::taskbar_visible,
             commands::app_quit,
-            commands::snip_region,
-            commands::snip_capture,
-            commands::snip_ensure,
+            // 原生截图（抓屏 / 选区预览 / 导出 / 关闭）
+            commands::snip::snip_capture,
+            commands::snip::snip_preview,
+            commands::snip::snip_diag_capture,
+            commands::snip::snip_copy_full,
+            commands::snip::snip_focus,
+            commands::snip::snip_cursor,
+            commands::snip::snip_export,
+            commands::snip::snip_close,
+            commands::scroll::snip_scroll_start,
+            commands::scroll::snip_scroll_set_auto,
+            commands::scroll::snip_scroll_finish,
+            commands::scroll::snip_scroll_cancel,
+            commands::scroll::snip_scroll_take,
+            commands::snip::snip_monitors,
+            commands::snip::snip_switch_monitor,
+            // 贴图（截图钉在屏幕上）
+            commands::pin::pin_open,
+            commands::pin::pin_image,
+            commands::pin::pin_zoom,
+            commands::pin::pin_move,
+            commands::pin::pin_close,
+            commands::pin::pin_set_opacity,
+            // 本地文字识别（系统 OCR）
+            commands::ocr::snip_ocr,
             // AI 助手（远端算力 + 工具调用）
             ai::ai_config_get,
             ai::ai_config_set,
@@ -189,14 +206,20 @@ fn main() {
             ai::ai_undo,
             ai::ai_stop,
             ai::ai_send,
-            // 数据目录（查看 / 迁移）
+            // 数据目录（查看 / 探测 / 切换 / 迁移）
             commands::data_path_get,
+            commands::data_path_inspect,
             commands::data_path_set,
+            commands::data_path_open,
             // 桌面层（吉祥物 + 桌面卡片）
             commands::desktop::desktop_state,
             commands::desktop::desktop_save,
             commands::desktop::mascot_open,
             commands::desktop::mascot_close,
+            commands::desktop::mascot_drag_begin,
+            commands::desktop::mascot_drag_update,
+            commands::desktop::mascot_drag_end,
+            commands::desktop::mascot_unfold,
             commands::desktop::mascot_menu_open,
             commands::desktop::mascot_menu_close,
             commands::desktop::mascot_context_menu,

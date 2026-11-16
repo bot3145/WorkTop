@@ -9,6 +9,7 @@ import { askConfirm, askPrompt } from "../lib/ui"
 import {
   autoPick,
   dockWindowSize,
+  explorerOf,
   mergeCustomApps,
   readCustomApps,
   readDockConfig,
@@ -34,7 +35,7 @@ import {
 import { CARD_KEYS, mergeConfig, type AppConfig, type CardKey } from "../lib/config"
 import type { Lang, T } from "../i18n"
 import { check as updaterCheck, type Update } from "@tauri-apps/plugin-updater"
-import { relaunch as updaterRelaunch } from "@tauri-apps/plugin-process"
+import { relaunch as relaunchApp } from "@tauri-apps/plugin-process"
 import {
   disable as autoStartOff,
   enable as autoStartOn,
@@ -174,7 +175,9 @@ async function syncDockWindow(cfg: DockConfig) {
   const list = cfg.apps.length
     ? cfg.apps.map((id) => dockApps.value.find((a) => a.id === id)).filter(Boolean)
     : autoPick(dockApps.value, 10)
-  const dims = dockWindowSize(cfg, list.length)
+  // 最左固定的文件管理器多占一个图标位（列表里已有则不重复计）
+  const exp = explorerOf(dockApps.value)
+  const dims = dockWindowSize(cfg, list.length + (exp && !list.includes(exp) ? 1 : 0))
   try {
     await invoke("dock_open", { width: dims.width, height: dims.height, position: cfg.position, margin: 8 })
   } catch (e) {
@@ -201,8 +204,7 @@ const resetPinned = () => persistDock({ ...dockCfg.value, apps: [] })
 
 /* ---------- 桌面卡片（settings.json 的 desktop 键，经 Rust 广播给各窗口） ---------- */
 const CARD_LABELS: Record<CardKey, string> = {
-  clock: "时钟",
-  calendar: "日历",
+  clock: "时间 · 日历",
   todo: "待办",
   notes: "便签",
   apps: "应用",
@@ -320,20 +322,36 @@ async function installUpdate() {
 
 async function restartForUpdate() {
   try {
-    await updaterRelaunch()
+    await relaunchApp()
   } catch (e) {
     toast(String((e as Error)?.message ?? e), true)
   }
 }
 
 const dataRoot = ref("")
+const dataDefault = ref("")
+const dataCustom = ref(false)
 const version = ref("")
+
+/** 当前数据目录 / 默认位置 / 是否改过（custom） */
+async function loadDataPath() {
+  try {
+    const info = await invoke<{ root: string; custom: boolean; default_root: string }>("data_path_get")
+    dataRoot.value = info.root
+    dataCustom.value = info.custom
+    dataDefault.value = info.default_root
+  } catch {
+    /* qa 预览等非 Tauri 环境下静默跳过 */
+  }
+}
+
 onMounted(async () => {
   try {
     const info = await call<{ root: string; version: string }>("app_info")
     dataRoot.value = info.root
     version.value = info.version
   } catch {}
+  void loadDataPath()
   if (!dockApps.value.length) void scanApps(false)
   void loadAutoStart()
   try {
@@ -342,31 +360,101 @@ onMounted(async () => {
   } catch {}
 })
 
-// 更改数据目录：选空文件夹 → Rust 拷贝全部数据 → 旧目录改名备份 → 热切换
+/* ---------- 数据目录：迁移（拷贝）或接管（直接用已有数据） ---------- */
+
+type DirProbe = { kind: "new" | "empty" | "same" | "existing_data" | "non_empty" | "invalid"; reason: string; files: number }
+
 const migrating = ref(false)
-async function changeDataRoot() {
-  if (migrating.value) return
-  const picked = await openFileDialog({
-    multiple: false,
-    directory: true,
-    title: "选择新的数据目录（必须为空文件夹）",
-  })
-  if (!picked || typeof picked !== "string") return
-  const ok = await askConfirm({
-    title: "迁移数据目录",
-    message: `将把全部数据迁移到：\n${picked}\n\n原目录会整体备份保留（data-backup-时间戳），不会删除。`,
-    okText: "开始迁移",
-  })
-  if (!ok) return
+const errText = (e: unknown) => String((e as Error)?.message ?? e)
+
+/** 在资源管理器里打开当前数据目录 */
+async function openDataRoot() {
+  try {
+    await invoke("data_path_open")
+  } catch (e) {
+    toast(errText(e), true)
+  }
+}
+
+/** 提交切换并刷新展示；adopt 需要重启才能让各窗口载入新数据 */
+async function applyDataRoot(picked: string, mode: "move" | "adopt") {
   migrating.value = true
   try {
-    const newRoot = await invoke<string>("data_path_set", { newPath: picked })
+    const newRoot = await invoke<string>("data_path_set", { newPath: picked, mode })
     dataRoot.value = newRoot
-    toast(`数据目录已迁移：${newRoot}`)
+    await loadDataPath()
+    if (mode === "adopt") {
+      toast("数据目录已切换，正在重启…")
+      setTimeout(() => void relaunchApp().catch(() => {}), 400)
+    } else {
+      toast(`数据目录已迁移：${newRoot}`)
+    }
   } catch (e) {
-    toast(String((e as Error).message ?? e), true)
+    toast(errText(e), true)
   } finally {
     migrating.value = false
+  }
+}
+
+/** 更改数据目录：先探测目标属于哪种情况，再决定迁移还是接管 */
+async function changeDataRoot() {
+  if (migrating.value) return
+  const picked = await openFileDialog({ multiple: false, directory: true, title: "选择数据目录" })
+  if (!picked || typeof picked !== "string") return
+
+  let probe: DirProbe
+  try {
+    probe = await invoke<DirProbe>("data_path_inspect", { path: picked })
+  } catch (e) {
+    toast(errText(e), true)
+    return
+  }
+  if (probe.kind === "same" || probe.kind === "invalid") {
+    toast(probe.reason, probe.kind === "invalid")
+    return
+  }
+
+  // 空/不存在的目录 → 把当前数据拷过去
+  if (probe.kind === "empty" || probe.kind === "new") {
+    const ok = await askConfirm({
+      title: "迁移数据到这个文件夹",
+      message: `将把当前全部数据（待办 / 导航 / 速记 / 密钥 / 资产 / AI 会话）复制到：\n${picked}\n\n原目录会整体改名为 data-backup-时间戳 保留，不会删除。`,
+      okText: "开始迁移",
+    })
+    if (ok) await applyDataRoot(picked, "move")
+    return
+  }
+
+  // 已有内容的目录 → 直接接管（一个字节都不动）
+  const looksLikeData = probe.kind === "existing_data"
+  const ok = await askConfirm({
+    title: looksLikeData ? "使用这个已有数据目录" : "这个文件夹不是空的",
+    message:
+      (looksLikeData
+        ? `这个文件夹里已经有 WorkTop 数据（${probe.files} 项）：\n${picked}\n\n`
+        : `这个文件夹不是空的（${probe.files} 项），但看起来不像 WorkTop 数据目录：\n${picked}\n\n`) +
+      "将直接切换过去使用：不复制、不改动、不删除里面的任何文件；当前数据目录也原样留在原地。\n\n切换后应用会自动重启。",
+    okText: "切换并重启",
+  })
+  if (ok) await applyDataRoot(picked, "adopt")
+}
+
+/** 恢复默认位置：优先把数据迁回去，默认位置已有文件时改为直接切过去 */
+async function resetDataRoot() {
+  if (migrating.value || !dataDefault.value) return
+  const ok = await askConfirm({
+    title: "恢复默认数据目录",
+    message: `将把数据迁回默认位置：\n${dataDefault.value}\n\n原目录会整体备份保留，不会删除。`,
+    okText: "迁回默认",
+  })
+  if (!ok) return
+  try {
+    await invoke<string>("data_path_set", { newPath: dataDefault.value, mode: "move" })
+    toast("已迁回默认位置")
+    await loadDataPath()
+  } catch {
+    // 默认位置里已经有文件（例如全新安装时自动建的那份），改为直接切过去
+    await applyDataRoot(dataDefault.value, "adopt")
   }
 }
 </script>
@@ -591,16 +679,21 @@ async function changeDataRoot() {
         <span class="k">{{ t("about_version") }}</span><span class="v">{{ version }}</span>
         <span class="k">{{ t("about_data") }}</span>
         <span class="v" style="word-break: break-all">
+          <span class="dp-badge" :class="{ custom: dataCustom }">{{ dataCustom ? "自定义" : "默认" }}</span>
           {{ dataRoot }}
-          <div class="row" style="gap: 8px; margin-top: 6px">
+          <div class="row" style="gap: 8px; margin-top: 8px; flex-wrap: wrap">
+            <button class="mini" @click="openDataRoot"><Icon name="folder" :size="12" />打开</button>
             <button class="mini" :disabled="migrating" @click="changeDataRoot">
-              <Icon name="folder" :size="12" />{{ migrating ? "迁移中…" : "更改数据目录…" }}
+              <Icon name="folder" :size="12" />{{ migrating ? "处理中…" : "更改…" }}
+            </button>
+            <button v-if="dataCustom" class="mini" :disabled="migrating" @click="resetDataRoot">
+              <Icon name="refresh" :size="12" />恢复默认
             </button>
           </div>
         </span>
       </div>
       <div class="muted" style="margin-top: 8px; font-size: 11.5px">
-        更改会把全部数据（待办/导航/速记/密钥/资产/AI 会话）迁移到新目录；原目录整体备份保留，不会删除。
+        选空文件夹 = 把现有数据迁移过去（原目录备份保留）；选已有数据的文件夹 = 直接切换过去使用（不复制、不改动原文件）。
       </div>
 
       <div class="upd-card">
@@ -691,5 +784,10 @@ async function changeDataRoot() {
 .guard-form { display: flex; flex-direction: column; gap: 8px; max-width: 320px; }
 .guard-form input { width: 100%; }
 .guard-hint { font-size: 11.5px; line-height: 1.65; margin-top: 14px; }
+/* 数据目录：默认 / 自定义标记 */
+.dp-badge { display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px;
+  font-size: 10.5px; line-height: 1.6; vertical-align: 1px;
+  background: var(--pwb-chip); color: var(--pwb-muted); }
+.dp-badge.custom { background: var(--pwb-tag-bg); color: var(--pwb-accent); }
 
 </style>

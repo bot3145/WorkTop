@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// 密钥文档面板：固定尺寸卡片 + 弹窗查看/编辑（ESC 两步退出）+ 新建/导入 .md|.txt。
+// 密钥文档面板：小卡片网格 + 点击预览（只读，不含编辑/删除入口）+ 新建/导入 .md|.txt。
 import { computed, inject, onMounted, ref, watch, type ComputedRef } from "vue"
-import { call, ApiError, type KeyDoc } from "../lib/api"
-import { toast, askConfirm } from "../lib/ui"
+import { call, type KeyDoc } from "../lib/api"
+import { toast } from "../lib/ui"
 import { guardReady, isLocked, refreshGuard } from "../lib/guard"
 import type { T } from "../i18n"
 import Icon from "../components/Icon.vue"
@@ -14,7 +14,6 @@ const t = inject<ComputedRef<T>>("t")!
 const docs = ref<KeyDoc[] | null>(null)
 const q = ref("")
 const detail = ref<{ name: string; ext: string } | null>(null)
-const draft = ref<string | null>(null)
 const adding = ref(false)
 const newName = ref("")
 
@@ -31,7 +30,6 @@ watch(locked, (v) => {
   }
   docs.value = null
   detail.value = null
-  draft.value = null
   adding.value = false
 })
 async function load() {
@@ -53,50 +51,6 @@ const fmtTime = (ms: number) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-const save = async () => {
-  if (!detail.value || !doc.value || draft.value === null) return
-  try {
-    const d = await call<{ hash: string; chars: number }>("keysdoc_put", {
-      name: detail.value.name,
-      ext: detail.value.ext,
-      text: draft.value,
-      baseHash: doc.value.hash,
-    })
-    docs.value = (docs.value ?? []).map((x) =>
-      x.name === detail.value!.name && x.ext === detail.value!.ext
-        ? { ...x, text: draft.value!, hash: d.hash, chars: d.chars, mtimeMs: Date.now() }
-        : x,
-    )
-    draft.value = null
-    toast(t.value("kd_saved"))
-  } catch (e) {
-    const err = e as ApiError
-    if (err.currentText !== undefined) {
-      draft.value = err.currentText
-      docs.value = (docs.value ?? []).map((x) =>
-        x.name === detail.value!.name && x.ext === detail.value!.ext ? { ...x, text: err.currentText!, hash: err.currentHash ?? "" } : x,
-      )
-      toast(t.value("kd_conflict"), true)
-    } else toast(err.message, true)
-  }
-}
-
-const removeDoc = async (d: KeyDoc) => {
-  const ok = await askConfirm({ title: t.value("kd_del"), danger: true, okText: t.value("ok_del"), message: t.value("kd_del_msg", { name: docTitle(d) }) })
-  if (!ok) return
-  try {
-    await call("keysdoc_delete", { name: d.name, ext: d.ext })
-    if (detail.value && detail.value.name === d.name && detail.value.ext === d.ext) {
-      detail.value = null
-      draft.value = null
-    }
-    await load()
-    toast(t.value("kd_deleted"))
-  } catch (e) {
-    toast(String((e as Error).message), true)
-  }
-}
-
 const createDoc = async () => {
   const name = newName.value.trim()
   if (!name) return
@@ -105,7 +59,6 @@ const createDoc = async () => {
     await call("keysdoc_put", { name, ext: "md", text: "" })
     await load()
     detail.value = { name, ext: "md" }
-    draft.value = ""
     adding.value = false
     newName.value = ""
     toast(t.value("kd_created"))
@@ -134,7 +87,6 @@ const importFile = () => {
       await call("keysdoc_put", { name, ext, text })
       await load()
       detail.value = { name, ext }
-      draft.value = null
       adding.value = false
       toast(t.value("kd_import_done", { name: name + hit[2] }))
     } catch (e) {
@@ -146,14 +98,11 @@ const importFile = () => {
 
 const kw = computed(() => q.value.trim().toLowerCase())
 const filtered = computed(() => (docs.value ?? []).filter((d) => !kw.value || (d.name + "\n" + d.text).toLowerCase().includes(kw.value)))
-const openView = (d: KeyDoc, edit = false) => {
+const openView = (d: KeyDoc) => {
   detail.value = { name: d.name, ext: d.ext }
-  draft.value = edit ? d.text : null
 }
-// 弹窗关闭：编辑态先退回查看态（两步退出），再关弹窗
 const closeDetail = () => {
-  if (draft.value === null) detail.value = null
-  else draft.value = null
+  detail.value = null
 }
 </script>
 
@@ -171,19 +120,15 @@ const closeDetail = () => {
     </div>
 
     <div style="margin-top: 12px">
-      <div v-if="filtered.length" class="note-grid">
+      <div v-if="filtered.length" class="note-grid kdoc-grid">
         <div v-for="d in filtered" :key="d.name + '.' + d.ext" class="card kdoc-card" :title="t('kd_open_tip')" @click="openView(d)">
-          <div class="card-actions">
-            <button class="ibtn sm" :title="t('note_edit')" @click.stop="openView(d, true)"><Icon name="edit" :size="12" /></button>
-            <button class="ibtn sm red" :title="t('kd_del')" @click.stop="removeDoc(d)"><Icon name="trash" :size="12" /></button>
-          </div>
           <div class="row">
-            <b class="note-title"><Icon name="file" :size="13" />{{ d.name }}<span v-if="d.ext === 'txt'" class="muted">.txt</span></b>
+            <b class="note-title"><Icon name="file" :size="12" />{{ d.name }}<span v-if="d.ext === 'txt'" class="muted">.txt</span></b>
           </div>
-          <div class="muted" style="margin-top: 4px; font-size: 11.5px; font-variant-numeric: tabular-nums">
+          <div class="muted" style="margin-top: 3px; font-size: 10.5px; font-variant-numeric: tabular-nums">
             {{ t("kd_chars", { chars: d.chars }) }} · {{ fmtTime(d.mtimeMs) }}
           </div>
-          <div v-if="d.text.trim()" class="kdoc-preview">{{ d.text.split("\n").filter((l) => l.trim()).slice(0, 4).join("\n") }}</div>
+          <div v-if="d.text.trim()" class="kdoc-preview">{{ d.text.split("\n").filter((l) => l.trim()).slice(0, 2).join("\n") }}</div>
         </div>
         <AddCard :label="t('kd_new')" @click="newName = ''; adding = true" />
       </div>
@@ -192,36 +137,23 @@ const closeDetail = () => {
       </template>
       <template v-else>
         <div class="empty"><Icon name="lock" :size="22" /><span>{{ t("kd_empty_list") }}</span></div>
-        <div class="note-grid"><AddCard :label="t('kd_new')" @click="newName = ''; adding = true" /></div>
+        <div class="note-grid kdoc-grid"><AddCard :label="t('kd_new')" @click="newName = ''; adding = true" /></div>
       </template>
     </div>
 
-    <!-- 详情弹窗：查看 / 编辑 / 删除 -->
+    <!-- 详情弹窗：仅预览（只读） -->
     <div v-if="detail && doc" class="pwb-modal-bg" @mousedown.self="closeDetail">
-      <div class="pwb-modal wide" role="dialog" aria-modal="true" :aria-label="docTitle(doc)" @keydown.esc="closeDetail">
+      <div class="pwb-modal wide kdoc-modal" role="dialog" aria-modal="true" :aria-label="docTitle(doc)"
+        @keydown.esc="closeDetail">
         <div class="pwb-modal-head"><h3>{{ docTitle(doc) }}</h3>
           <button class="ibtn" @click="closeDetail"><Icon name="x" :size="14" /></button>
         </div>
-        <template v-if="draft === null">
-          <div class="row muted" style="gap: 10px; margin-bottom: 8px; font-size: 12px; font-variant-numeric: tabular-nums">
-            <span>{{ t("kd_chars", { chars: doc.chars }) }}</span>
-            <span>{{ fmtTime(doc.mtimeMs) }}</span>
-          </div>
-          <div v-if="doc.text.trim()" class="kdoc-view" style="min-height: 180px; max-height: 52vh; overflow: auto">{{ doc.text }}</div>
-          <div v-else class="empty"><Icon name="edit" :size="22" /><span>{{ t("kd_empty_doc") }}</span></div>
-          <div class="row" style="justify-content: space-between; margin-top: 12px">
-            <button class="danger mini" @click="removeDoc(doc)"><Icon name="trash" :size="12" />{{ t("kd_del") }}</button>
-            <button class="primary mini" @click="draft = doc.text"><Icon name="edit" :size="12" />{{ t("note_edit") }}</button>
-          </div>
-        </template>
-        <template v-else>
-          <textarea v-model="draft" rows="18" autofocus
-            style="width: 100%; border: 1px solid var(--pwb-border-strong); border-radius: 8px; background: var(--pwb-input-bg); color: var(--pwb-text); font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.6; resize: vertical; padding: 10px 12px; outline: none; display: block" />
-          <div class="row" style="justify-content: flex-end; margin-top: 10px">
-            <button class="mini" @click="draft = null">{{ t("cancel") }}</button>
-            <button class="primary mini" @click="save">{{ t("save") }}</button>
-          </div>
-        </template>
+        <div class="row muted" style="gap: 10px; margin-bottom: 8px; font-size: 12px; font-variant-numeric: tabular-nums">
+          <span>{{ t("kd_chars", { chars: doc.chars }) }}</span>
+          <span>{{ fmtTime(doc.mtimeMs) }}</span>
+        </div>
+        <div v-if="doc.text.trim()" class="kdoc-view">{{ doc.text }}</div>
+        <div v-else class="empty"><Icon name="file" :size="22" /><span>{{ t("kd_empty_doc") }}</span></div>
       </div>
     </div>
 

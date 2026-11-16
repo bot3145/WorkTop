@@ -7,13 +7,19 @@ export interface CtxItem {
   label: string
   danger?: boolean
 }
-const props = defineProps<{ x: number; y: number; items: CtxItem[] }>()
+const props = defineProps<{ x: number; y: number; items: CtxItem[]; noClamp?: boolean }>()
 const emit = defineEmits<{ select: [key: string]; close: [] }>()
 
-const pos = computed(() => ({
-  left: Math.min(props.x, window.innerWidth - 190) + "px",
-  top: Math.min(props.y, window.innerHeight - 40 - props.items.length * 30) + "px",
-}))
+// noClamp：调用方（Dock 贴身小窗）已在「基准系」里完成定位与钳制，
+// 这里不能再按当前视口 innerWidth/innerHeight 钳——扩窗期间会把坐标推错。
+const pos = computed(() =>
+  props.noClamp
+    ? { left: props.x + "px", top: props.y + "px" }
+    : {
+        left: Math.min(props.x, window.innerWidth - 190) + "px",
+        top: Math.min(props.y, window.innerHeight - 40 - props.items.length * 30) + "px",
+      },
+)
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") emit("close")
 }

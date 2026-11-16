@@ -290,16 +290,19 @@
 .pwb .note-card:hover .card-actions { opacity: 1; }
 .pwb .note-card.editing .card-actions { position: static; opacity: 1; margin-top: 8px; justify-content: flex-end; }
 .pwb .note-title { font-weight: 600; font-size: 12.5px; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
-.pwb .kdoc-card { position: relative; height: 172px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; }
+.pwb .kdoc-card { position: relative; height: 86px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; padding: 8px 10px; }
 .pwb .kdoc-card:hover { box-shadow: var(--pwb-shadow-sm); }
-.pwb .kdoc-card .note-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pwb .kdoc-card .card-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; opacity: 0; transition: opacity .15s;
-  background: var(--pwb-card); border-radius: 8px; padding: 2px; z-index: 2; }
-.pwb .kdoc-card:hover .card-actions { opacity: 1; }
-.pwb .kdoc-preview { flex: 1; overflow: hidden; margin-top: 6px; color: var(--pwb-muted); font-size: 12.5px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+.pwb .kdoc-card .note-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.pwb .kdoc-preview { flex: 1; overflow: hidden; margin-top: 5px; color: var(--pwb-muted); font-size: 11px; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .pwb .kdoc-view { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.6;
   background: var(--pwb-card); border: 1px solid var(--pwb-border); border-radius: var(--pwb-radius-lg); padding: 14px; }
+/* 文档预览弹窗：宽一些、上下尽量占满（长文档一屏读完，少滚动） */
+.pwb .pwb-modal.kdoc-modal { width: min(920px, 94%); height: 90vh; max-height: 90vh; padding: 16px 20px 18px;
+  display: flex; flex-direction: column; overflow: hidden; }
+.pwb .pwb-modal.kdoc-modal .pwb-modal-head { flex: 0 0 auto; }
+.pwb .pwb-modal.kdoc-modal .kdoc-view { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.pwb .pwb-modal.kdoc-modal .empty { flex: 1 1 auto; }
 
 /* ---------- 新增 ＋ 卡 ---------- */
 .pwb .addcard { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
@@ -309,6 +312,9 @@
 .pwb .addcard:hover { border-color: var(--pwb-accent); color: var(--pwb-accent); background: var(--pwb-card); transform: translateY(-1px); }
 .pwb .addcard:active { transform: none; }
 .pwb .note-grid .addcard { height: 172px; }
+/* 密钥文档：卡片缩小一半（列宽 160 / 高 86），点击仅预览 */
+.pwb .kdoc-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.pwb .kdoc-grid .addcard { height: 86px; }
 
 /* ---------- 弹窗（Promise 风格的轻量对话框） ---------- */
 .pwb-modal-bg { position: fixed; inset: 0; background: var(--pwb-overlay); z-index: 50; display: flex; align-items: center;

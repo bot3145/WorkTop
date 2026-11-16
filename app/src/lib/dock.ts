@@ -1,4 +1,5 @@
 // Dock 配置与类型（localStorage 在同源窗口间共享，主窗口与 Dock 窗口读同一份）
+import { BUILTIN_IDS } from "./apps"
 export interface DockAppInfo {
   id: string
   name: string
@@ -21,6 +22,8 @@ export interface DockConfig {
   size: number // 图标尺寸 px
   position: DockPosition
   apps: string[] // 固定到 Dock 的应用 id；空数组 = 自动挑选
+  /** 内置功能快捷入口（功能窗口 id，如 assets/nav/keys）；排在应用图标右侧、以分隔条隔开 */
+  builtin: string[]
 }
 
 const LS_KEY = "pwb_dock_cfg"
@@ -35,6 +38,7 @@ const DEFAULTS: DockConfig = {
   size: 46,
   position: "bottom",
   apps: [],
+  builtin: [],
 }
 
 export function readDockConfig(): DockConfig {
@@ -50,6 +54,11 @@ export function readDockConfig(): DockConfig {
         // v3：不再默认隐藏系统任务栏（v2 及更早的配置一次性改回，之后用户手动开启才会生效）
         if ((parsed.v ?? 1) < 3) cfg.replaceTaskbar = false
         cfg.v = 3
+        // builtin 可能被外部改坏：清洗成合法 id 数组（pad 与 8 个功能 id 之外的全部剔除）
+        const legal = new Set(BUILTIN_IDS)
+        cfg.builtin = Array.isArray(parsed.builtin)
+          ? parsed.builtin.filter((id): id is string => typeof id === "string" && legal.has(id))
+          : []
         return cfg
       }
     }
@@ -121,12 +130,16 @@ export function sortForPicker(apps: DockAppInfo[]): DockAppInfo[] {
   })
 }
 
-/** 计算 Dock 窗口尺寸（前端与 Rust 定位共用）；左/右侧为竖向 Dock */
+/** 计算 Dock 窗口尺寸（前端与 Rust 定位共用）；左/右侧为竖向 Dock。
+ *  除应用图标外还统计：内置功能入口（cfg.builtin）+ 固定的「工作台」按钮 + 「＋」按钮；
+ *  分隔条占一个图标间距（gap 宽），悬停放大余量照旧。 */
 export function dockWindowSize(cfg: DockConfig, iconCount: number) {
   const gap = 8
   const padding = 10
-  const n = Math.max(1, iconCount) + 1 // +1 为「＋」按钮
-  const length = padding * 2 + n * cfg.size + (n - 1) * gap
+  const builtin = cfg.builtin?.length ?? 0
+  const n = Math.max(1, iconCount) + builtin + 1 + 1 // +1 工作台按钮，+1「＋」按钮
+  const sepWidth = builtin > 0 ? gap : 0 // 分隔条自身宽度（应用 | 内置 之间）
+  const length = padding * 2 + n * cfg.size + (n - 1) * gap + sepWidth
   // 悬停放大 1.42×，同时最多上移 ~10px：横/竖两个方向都要留出余量，否则图标被窗口裁掉
   const cross = Math.round(cfg.size * 1.55 + 34)
   if (cfg.position === "bottom") return { width: length, height: cross, gap, padding }
@@ -162,3 +175,6 @@ export function mergeCustomApps(scanned: DockAppInfo[], custom: DockAppInfo[]): 
   }
   return out
 }
+
+/** 文件管理器（Dock 最左固定图标）：主窗/设置页计算窗口尺寸时要为它多算一个图标位 */
+export const explorerOf = (apps: DockAppInfo[]) => apps.find((a) => /explorer\.exe$/i.test(a.path))

@@ -1,6 +1,6 @@
 [package]
 name = "pwb-app"
-version = "3.2.0"
+version = "3.3.0"
 description = "Worktop — 本地优先的个人工作台桌面版（数据格式与 pwb-lite 兼容）"
 edition = "2021"
 license = "MIT"
@@ -25,6 +25,8 @@ hmac = "0.12"
 scrypt = "0.11"
 aes-gcm = "0.10"
 base64 = "0.22"
+# 原生截图：抓屏结果的 PNG 编码，以及前端合成图的解码
+png = "0.18"
 thiserror = "2"
 tokio = { version = "1", features = ["net", "time", "io-util"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
@@ -32,6 +34,18 @@ keyring = { version = "3", features = ["windows-native", "apple-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# 本地文字识别（OCR）：直接用系统自带的 Windows.Media.Ocr（WinRT），
+# 不下载模型、不走网络、不打包第三方引擎。版本与 tauri 依赖树一致，只多编译这几个 feature。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
+  "Win32_System_WinRT",
+] }
 
 [profile.release]
 opt-level = "s"     # 体积优先（个人本地工具，性能足够）

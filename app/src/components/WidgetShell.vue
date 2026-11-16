@@ -125,6 +125,7 @@ const pos = () => posOf(props.id)
 .widget-item.embedded :deep(.tw-more),
 .widget-item.embedded :deep(.kd-more),
 .widget-item.embedded :deep(.aw-more),
+.widget-item.embedded :deep(.as-more),
 .widget-item.embedded :deep(.nv-more) {
   color: #8fe6ae !important;
   text-shadow: inherit;

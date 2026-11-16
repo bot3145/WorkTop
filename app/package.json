@@ -1,7 +1,7 @@
 {
   "name": "worktop",
   "private": true,
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Worktop — 本地优先的个人工作台桌面版：待办/导航/资产/凭据/速记 + 桌面壳、Dock 与桌宠（Tauri 2 + Vue 3 + Rust）",
   "license": "MIT",
   "author": "Worktop contributors",
@@ -25,8 +25,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "airsnip:fetch": "node scripts/fetch-airsnip.mjs"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

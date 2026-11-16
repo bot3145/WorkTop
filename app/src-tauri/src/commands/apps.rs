@@ -227,7 +227,12 @@ fn launchable(path: &Path) -> bool {
 }
 
 #[tauri::command]
-pub fn apps_launch(state: State<AppState>, file: String) -> AppResult<()> {
+pub fn apps_launch(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    file: String,
+    maximized: Option<bool>,
+) -> AppResult<()> {
     let (dir, _) = apps_prefs(&state);
     let dir = dir.ok_or_else(|| AppError::validation("尚未配置应用目录。"))?;
     let full = safe_child(Path::new(&dir), &file)?;
@@ -235,6 +240,40 @@ pub fn apps_launch(state: State<AppState>, file: String) -> AppResult<()> {
         return Err(AppError::validation("只能启动快捷方式或可执行文件（.lnk/.url/.exe/.app）。"));
     }
     let target = full.to_string_lossy().into_owned();
+    // 双击 = 全屏：先看这个应用是不是已经开着，开着就直接前置最大化，不再起第二个实例
+    #[cfg(windows)]
+    {
+        if maximized.unwrap_or(false) {
+            if let Some(proc_name) = crate::commands::dock::proc_name_of(&app, &target) {
+                if crate::commands::dock::focus_maximize(&proc_name) {
+                    return Ok(());
+                }
+                let child = std::process::Command::new(opener())
+                    .arg(&target)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| AppError::new("io", format!("启动失败：{e}")))?;
+                std::mem::drop(child);
+                crate::commands::dock::show_maximized_when_ready(proc_name, 6000);
+                return Ok(());
+            }
+            // .lnk 解析不出 exe：先启动，再在后台解析目标并把窗口最大化
+            let child = std::process::Command::new(opener())
+                .arg(&target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| AppError::new("io", format!("启动失败：{e}")))?;
+            std::mem::drop(child);
+            crate::commands::dock::maximize_after_launch(target.clone(), 8000);
+            return Ok(());
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (&app, &maximized);
     let child = std::process::Command::new(opener())
     .arg(&target)
     .stdin(std::process::Stdio::null())

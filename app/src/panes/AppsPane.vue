@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { convertFileSrc } from "@tauri-apps/api/core"
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog"
 import { toast } from "../lib/ui"
+import { createClickSplitter } from "../lib/click"
 import type { Lang, T } from "../i18n"
 import Icon from "../components/Icon.vue"
 
@@ -174,18 +175,21 @@ async function openFolder() {
   }
 }
 
-async function launch(a: AppEntry) {
+async function launch(a: AppEntry, maximized = false) {
   if (busy.value) return
   busy.value = a.file
   try {
-    await invoke("apps_launch", { file: a.file })
-    toast(t.value("launched", { name: a.name }))
+    await invoke("apps_launch", { file: a.file, maximized })
+    toast(t.value(maximized ? "launched_full" : "launched", { name: a.name }))
   } catch (e) {
     toast(String((e as Error).message ?? e), true)
   } finally {
     busy.value = ""
   }
 }
+
+/** 单击 = 普通启动；双击 = 启动（或找到已在运行的窗口）并全屏 */
+const clickSplit = createClickSplitter()
 
 async function togglePin(a: AppEntry) {
   const current = data.value?.pinned ?? []
@@ -219,6 +223,7 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
   window.removeEventListener("resize", measure)
   ro?.disconnect()
+  clickSplit.dispose()
 })
 watch(data, remeasure)
 </script>
@@ -249,7 +254,8 @@ watch(data, remeasure)
       <div v-if="data.dir && pinnedShown.length" class="lp-pinned">
         <div class="lp-grid" :style="{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }">
           <button v-for="a in pinnedShown" :key="'pin-' + a.file" class="lp-app" :title="t('card_title', { file: a.file })"
-            :disabled="busy === a.file" @click="launch(a)">
+            :disabled="busy === a.file" @click="clickSplit.single(() => launch(a))"
+            @dblclick.stop="clickSplit.double(() => launch(a, true))">
             <span class="lp-tile">
               <img v-if="iconOf(a)" :src="iconOf(a)" alt="" draggable="false"
                 @error="($event.target as HTMLImageElement).style.visibility = 'hidden'">
@@ -287,7 +293,8 @@ watch(data, remeasure)
       <div v-else ref="stageEl" class="lp-stage" @wheel.prevent="onWheel">
         <div v-if="pageItems.length" class="lp-grid" :style="{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }">
           <button v-for="a in pageItems" :key="a.file" class="lp-app" :title="t('card_title', { file: a.file })"
-            :disabled="busy === a.file" @click="launch(a)">
+            :disabled="busy === a.file" @click="clickSplit.single(() => launch(a))"
+            @dblclick.stop="clickSplit.double(() => launch(a, true))">
             <span class="lp-tile">
               <img v-if="iconOf(a)" :src="iconOf(a)" alt="" draggable="false"
                 @error="($event.target as HTMLImageElement).style.visibility = 'hidden'">

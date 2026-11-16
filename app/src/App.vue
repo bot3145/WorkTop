@@ -7,7 +7,7 @@ import { ui, closeDlg, toast } from "./lib/ui"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window"
-import { autoPick, dockWindowSize, readDockConfig, readScanCache } from "./lib/dock"
+import { autoPick, dockWindowSize, explorerOf, readDockConfig, readScanCache } from "./lib/dock"
 import { CARD_KEYS, mergeConfig, resolveLayout, type AppConfig } from "./lib/config"
 import { APPS, appDef } from "./lib/apps"
 import { AI_PROMPTS, askAi } from "./lib/ai"
@@ -19,7 +19,6 @@ import WindowFrame from "./components/WindowFrame.vue"
 import SettingsApp from "./components/SettingsApp.vue"
 import ClockWidget from "./components/widgets/ClockWidget.vue"
 import TodoWidget from "./components/widgets/TodoWidget.vue"
-import CalendarWidget from "./components/widgets/CalendarWidget.vue"
 import NotesWidget from "./components/widgets/NotesWidget.vue"
 import AppsPane from "./panes/AppsPane.vue"
 import TodoPane from "./panes/TodoPane.vue"
@@ -169,6 +168,7 @@ function onDesktopCtx(e: MouseEvent) {
     y: e.clientY,
     items: [
       { key: "launchpad", label: tc.value("ctx_launchpad") },
+      { key: "workbench", label: tc.value("ctx_workbench") },
       { key: "snip", label: tc.value("snip_copy") },
       { key: "settings", label: tc.value("ctx_settings") },
       { key: "closeall", label: tc.value("ctx_close_all"), danger: true },
@@ -177,6 +177,7 @@ function onDesktopCtx(e: MouseEvent) {
 }
 function onCtxSelect(key: string) {
   if (key === "launchpad") padOpen.value = true
+  else if (key === "workbench") void invoke("workbench_open").catch(() => {})
   else if (key === "settings") launch("settings")
   else if (key === "snip") void invoke("snip_capture").catch(() => {})
   else if (key === "closeall") closeAll()
@@ -195,7 +196,8 @@ onMounted(async () => {
     await loadCfg()
     void syncCards()
   })
-  // 极简模式：启用桌面壳时隐藏主窗口，桌面只留卡片、Dock 与吉祥物
+  // 主窗在配置加载前保持隐藏：桌面壳模式只留卡片/Dock/吉祥物，
+  // 工作台模式也等内容首帧就绪后再显示，避免启动时先闪一块黑色空窗。
   if (deskCfg.value.enabled) {
     try {
       await invoke("mascot_open")
@@ -203,8 +205,14 @@ onMounted(async () => {
     } catch (e) {
       toast("吉祥物启动失败：" + String((e as Error).message ?? e), true)
     }
+  } else {
+    const win = getCurrentWindow()
+    await win.show().catch(() => {})
+    await win.setFocus().catch(() => {})
   }
-  void syncCards()
+  // 让吉祥物/桌面先完成首帧，再开始创建多张独立卡片窗；否则启动瞬间集中建
+  // 八九个 WebView2 窗口，主线程会连续卡顿，看起来像“黑屏卡死”。
+  setTimeout(() => void syncCards(), 260)
   unlistenResize = await getCurrentWindow().onResized(() => void syncCards()).catch(() => null)
 })
 onUnmounted(() => {
@@ -220,7 +228,9 @@ async function restoreDock() {
   const list = cfg.apps.length
     ? cfg.apps.map((id) => apps.find((a) => a.id === id)).filter(Boolean)
     : autoPick(apps, 10)
-  const dims = dockWindowSize(cfg, list.length)
+  // 最左固定的文件管理器多占一个图标位（列表里已有则不重复计）
+  const exp = explorerOf(apps)
+  const dims = dockWindowSize(cfg, list.length + (exp && !list.includes(exp) ? 1 : 0))
   try {
     await invoke("dock_open", { width: dims.width, height: dims.height, position: cfg.position, margin: 8 })
   } catch {}
@@ -252,7 +262,6 @@ const submitDlg = () => {
       <!-- 桌面小组件 -->
       <div class="widgets-layer">
         <ClockWidget v-if="deskCfg.cards.clock" />
-        <CalendarWidget v-if="deskCfg.cards.calendar" />
         <TodoWidget v-if="deskCfg.cards.todo" @open-app="launch" />
         <NotesWidget v-if="deskCfg.cards.notes" @open-app="launch" />
       </div>

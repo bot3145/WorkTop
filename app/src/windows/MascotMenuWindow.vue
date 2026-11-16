@@ -56,7 +56,7 @@ const items = computed(() => ITEMS.map((it, i) => ({ ...it, fa: it.angle, i })))
 async function open(id: string) {
   try {
     if (id === "snip") {
-      // 统一截图入口：装了 AirSnip 转发其 F1，否则自带拖选截图
+      // WorkTop 原生截图：Rust 抓屏 + 自家选区/标注窗口
       await invoke("snip_capture").catch(() => {})
     } else {
       await invoke("pane_open", { id, width: id === "settings" ? 760 : 680, height: id === "settings" ? 560 : 520 })

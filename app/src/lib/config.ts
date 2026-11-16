@@ -5,7 +5,6 @@ export type { Lang, T } from "../i18n"
 
 export interface PetCards {
   clock: boolean
-  calendar: boolean
   todo: boolean
   notes: boolean
   apps: boolean
@@ -40,6 +39,8 @@ export interface AppConfig {
   mascotY?: number
   cards: PetCards
   cardLayout: CardLayout
+  /** 被锁定的卡片：锁住后不能拖动、不能改大小（卡片右下角的锁按钮切换） */
+  cardLocked: string[]
   toolbar: boolean
   dock: boolean
 }
@@ -49,8 +50,9 @@ export const CONFIG_DEFAULTS: AppConfig = {
   cardFontScale: 1,
   mascotFolded: false,
   mascotEdge: "right",
-  cards: { clock: true, calendar: true, todo: true, notes: true, apps: false, nav: false, assets: false, keys: false, ai: false },
+  cards: { clock: true, todo: true, notes: true, apps: false, nav: false, assets: false, keys: false, ai: false },
   cardLayout: {},
+  cardLocked: [],
   toolbar: false,
   dock: false,
 }
@@ -78,6 +80,11 @@ export function mergeConfig(raw: Record<string, unknown> | undefined | null): Ap
       if (typeof c[k] === "boolean") cfg.cards[k] = c[k] as boolean
     }
   }
+  if (Array.isArray(r.cardLocked)) {
+    cfg.cardLocked = (r.cardLocked as unknown[]).filter(
+      (k): k is string => typeof k === "string" && (CARD_KEYS as readonly string[]).includes(k),
+    )
+  }
   if (r.cardLayout && typeof r.cardLayout === "object") {
     for (const k of CARD_KEYS) {
       const item = (r.cardLayout as Record<string, unknown>)[k]
@@ -104,7 +111,6 @@ export function mergeConfig(raw: Record<string, unknown> | undefined | null): Ap
 
 export const CARD_KEYS = [
   "clock",
-  "calendar",
   "todo",
   "notes",
   "apps",
@@ -115,10 +121,9 @@ export const CARD_KEYS = [
 ] as const
 export type CardKey = (typeof CARD_KEYS)[number]
 
-/** 卡片默认尺寸（也可被用户拖动缩放覆盖） */
+/** 卡片默认尺寸（也可被用户拖动缩放覆盖）。clock = 时间+日历组合卡（2026-11-13 合并） */
 export const CARD_SIZE: Record<CardKey, { w: number; h: number }> = {
-  clock: { w: 220, h: 140 },
-  calendar: { w: 320, h: 330 },
+  clock: { w: 240, h: 262 },
   todo: { w: 300, h: 240 },
   notes: { w: 290, h: 220 },
   apps: { w: 300, h: 280 },
@@ -130,8 +135,7 @@ export const CARD_SIZE: Record<CardKey, { w: number; h: number }> = {
 
 /** 卡片最小尺寸（缩放下限） */
 export const CARD_MIN: Record<CardKey, { w: number; h: number }> = {
-  clock: { w: 160, h: 96 },
-  calendar: { w: 260, h: 260 },
+  clock: { w: 196, h: 212 },
   todo: { w: 220, h: 140 },
   notes: { w: 220, h: 130 },
   apps: { w: 230, h: 180 },

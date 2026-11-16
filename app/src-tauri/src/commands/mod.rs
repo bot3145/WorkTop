@@ -4,6 +4,10 @@ pub mod assets;
 pub mod desktop;
 pub mod dock;
 pub mod guard;
+pub mod ocr;
+pub mod pin;
+pub mod scroll;
+pub mod snip;
 
 use crate::error::{AppError, AppResult};
 use crate::store::{self, nav::NavDoc, read_doc, write_doc};
@@ -58,7 +62,7 @@ pub fn resolve_root(app_data_dir: PathBuf) -> PathBuf {
 }
 
 pub fn ensure_layout(root: &PathBuf) {
-    for dir in ["cache/icons", "cache/appicons", "tokens", "密钥", "对话"] {
+    for dir in ["cache/icons", "cache/appicons", "cache/pins", "tokens", "密钥", "对话"] {
         let _ = fs::create_dir_all(root.join(dir));
     }
     for name in ["待办.md", "导航.md", "资产.md", "凭据.md", "速记.md"] {
@@ -321,80 +325,212 @@ pub fn app_info(state: State<AppState>) -> AppInfo {
     AppInfo { version: env!("CARGO_PKG_VERSION"), root: state.root().to_string_lossy().into_owned() }
 }
 
-/* ---------- 数据目录：查看与迁移 ---------- */
+/* ---------- 数据目录：查看 / 切换 / 迁移 ---------- */
 
-/// 查询当前数据目录与迁移历史备份（供设置页展示）。
+/// 查询当前数据目录、默认位置与是否为自定义（供设置页展示）。
 #[derive(Serialize)]
 pub struct DataPathInfo {
     pub root: String,
     pub custom: bool,
+    pub default_root: String,
+}
+
+fn app_data_of(app: &tauri::AppHandle) -> AppResult<PathBuf> {
+    use tauri::Manager;
+    app.path()
+        .app_data_dir()
+        .map_err(|e| AppError::new("internal", format!("无法定位应用数据目录：{e}")))
 }
 
 #[tauri::command]
 pub fn data_path_get(app: tauri::AppHandle, state: State<AppState>) -> AppResult<DataPathInfo> {
-    use tauri::Manager;
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::new("internal", format!("无法定位应用数据目录：{e}")))?;
-    let custom = app_data.join("data-path.txt").exists();
-    Ok(DataPathInfo { root: state.root().to_string_lossy().into_owned(), custom })
+    let app_data = app_data_of(&app)?;
+    Ok(DataPathInfo {
+        root: state.root().to_string_lossy().into_owned(),
+        custom: app_data.join("data-path.txt").exists(),
+        default_root: app_data.join("data").to_string_lossy().into_owned(),
+    })
 }
 
-/// 更改数据目录并迁移现有数据（命令层：取路径 → 调核心 → 热切换运行时 root）。
-#[tauri::command]
-pub fn data_path_set(app: tauri::AppHandle, state: State<AppState>, new_path: String) -> AppResult<String> {
-    use tauri::Manager;
-    if let Ok(dir) = std::env::var("PWB_DATA_DIR") {
-        if !dir.trim().is_empty() {
-            return Err(AppError::validation("开发模式（PWB_DATA_DIR）下不允许迁移数据目录。"));
+/// 目标目录归类结果：设置页据此决定走「迁移（拷贝）」还是「接管（直接用）」。
+#[derive(Serialize)]
+pub struct PathProbe {
+    /// new（不存在待新建）| empty | same | existing_data | non_empty | invalid
+    pub kind: String,
+    /// 给用户看的说明（invalid 时即错误原文）
+    pub reason: String,
+    pub files: usize,
+}
+
+/// 认得出来的 WorkTop 数据特征（出现任一项即视为「这里有旧数据」）
+const DATA_MARKERS: [&str; 8] = ["设置.json", "待办.md", "导航.md", "速记.md", "资产.md", "凭据.md", "密钥", "对话"];
+
+/// 纯函数：判断目标目录属于哪种情况（不做任何写入）。
+fn probe_dir(old_root: &Path, target: &Path) -> PathProbe {
+    let mk = |kind: &str, reason: &str, files: usize| PathProbe {
+        kind: kind.to_string(),
+        reason: reason.to_string(),
+        files,
+    };
+    if target.as_os_str().is_empty() {
+        return mk("invalid", "路径不能为空。", 0);
+    }
+    if !target.is_absolute() {
+        return mk("invalid", "请选择绝对路径（用「浏览」选文件夹，不要手输相对路径）。", 0);
+    }
+    let (Ok(n), Ok(o)) = (std::path::absolute(target), std::path::absolute(old_root)) else {
+        return mk("invalid", "无法解析路径。", 0);
+    };
+    if n == o {
+        return mk("same", "这已经是当前数据目录。", 0);
+    }
+    if n.starts_with(&o) || o.starts_with(&n) {
+        return mk("invalid", "新旧目录不能互相包含，请换一个独立的文件夹。", 0);
+    }
+    if !target.exists() {
+        let parent_ok = target.parent().map(Path::is_dir).unwrap_or(false);
+        return if parent_ok {
+            mk("new", "文件夹还不存在，将新建。", 0)
+        } else {
+            mk("invalid", "目标的上层目录不存在，请先建好上级文件夹。", 0)
+        };
+    }
+    if !target.is_dir() {
+        return mk("invalid", "目标不是文件夹。", 0);
+    }
+    let mut entries: Vec<fs::DirEntry> = Vec::new();
+    if let Ok(it) = fs::read_dir(target) {
+        for e in it.flatten() {
+            entries.push(e);
         }
     }
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::new("internal", format!("无法定位应用数据目录：{e}")))?;
+    if entries.is_empty() {
+        return mk("empty", "文件夹是空的。", 0);
+    }
+    let has_data = entries.iter().any(|e| {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        DATA_MARKERS.iter().any(|m| *m == name)
+    });
+    if has_data {
+        mk("existing_data", "文件夹里已经有 WorkTop 数据。", entries.len())
+    } else {
+        mk("non_empty", "文件夹不是空的，但看着不像 WorkTop 数据目录。", entries.len())
+    }
+}
+
+/// 只探测、不改动：设置页在弹确认框之前先问一次。
+#[tauri::command]
+pub fn data_path_inspect(state: State<AppState>, path: String) -> AppResult<PathProbe> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err(AppError::validation("路径不能为空。"));
+    }
+    Ok(probe_dir(&state.root(), Path::new(p)))
+}
+
+/// 在资源管理器里打开当前数据目录。
+#[tauri::command]
+pub fn data_path_open(state: State<AppState>) -> AppResult<()> {
+    let root = state.root();
+    if !root.is_dir() {
+        fs::create_dir_all(&root).map_err(|e| AppError::new("io", format!("创建数据目录失败：{e}")))?;
+    }
+    let target = root.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let (program, args) = ("explorer.exe", vec![target]);
+    #[cfg(target_os = "macos")]
+    let (program, args) = ("open", vec![target]);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (program, args) = ("xdg-open", vec![target]);
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let child = cmd.spawn().map_err(|e| AppError::new("io", format!("打开文件夹失败：{e}")))?;
+    std::mem::drop(child);
+    Ok(())
+}
+
+/// 更改数据目录（命令层：取路径 → 调核心 → 热切换运行时 root）。
+///
+/// `mode`：
+/// - `move`（默认）把当前数据完整拷到新目录，旧目录改名备份；
+/// - `adopt` 目标里本来就有数据（旧电脑/旧版本/worktop 早期目录），直接接管，
+///   一个字节都不拷、不改，旧目录原样留在原地。
+#[tauri::command]
+pub fn data_path_set(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    new_path: String,
+    mode: Option<String>,
+) -> AppResult<String> {
+    if let Ok(dir) = std::env::var("PWB_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return Err(AppError::validation("开发模式（PWB_DATA_DIR）下不允许更改数据目录。"));
+        }
+    }
+    let app_data = app_data_of(&app)?;
     let new_root = PathBuf::from(new_path.trim());
-    migrate_data_root(&state.root(), &new_root, &app_data.join("data-path.txt"), &app_data)?;
-    // 热切换运行时 root（迁移已成功落盘）
+    let marker = app_data.join("data-path.txt");
+    let old_root = state.root();
+    match mode.as_deref().unwrap_or("move") {
+        "adopt" => adopt_data_root(&old_root, &new_root, &marker, &app_data)?,
+        "move" => migrate_data_root(&old_root, &new_root, &marker, &app_data)?,
+        other => return Err(AppError::validation(format!("未知的更改方式：{other}"))),
+    }
+    // 热切换运行时 root（落盘已成功）
     if let Ok(mut r) = state.root.lock() {
         *r = new_root.clone();
     }
+    ensure_layout(&new_root);
     Ok(new_root.to_string_lossy().into_owned())
+}
+
+/// 接管已有目录：只写标记，不拷贝、不改动目标里的任何文件；旧目录原样保留。
+fn adopt_data_root(old_root: &Path, new_root: &Path, marker: &Path, backup_parent: &Path) -> AppResult<()> {
+    let probe = probe_dir(old_root, new_root);
+    match probe.kind.as_str() {
+        "same" => return Err(AppError::validation("这已经是当前数据目录。")),
+        "invalid" => return Err(AppError::validation(probe.reason)),
+        _ => {}
+    }
+    if !new_root.exists() {
+        fs::create_dir_all(new_root).map_err(|e| AppError::new("io", format!("创建目录失败：{e}")))?;
+    }
+    let default_root = backup_parent.join("data");
+    if std::path::absolute(new_root).ok().as_deref() == std::path::absolute(&default_root).ok().as_deref() {
+        let _ = fs::remove_file(marker);
+    } else {
+        fs::write(marker, new_root.to_string_lossy().as_bytes())
+            .map_err(|e| AppError::new("io", format!("记录新路径失败（原目录未动）：{e}")))?;
+    }
+    Ok(())
 }
 
 /// 数据目录迁移核心（纯文件系统操作，便于测试）：
 /// 校验 → 完整拷贝到新位置 → 更新 data-path.txt（迁回默认位置时删除标记）→
 /// 旧目录改名 data-backup-<时间戳>（保留，不删）。任何一步失败都不动原数据。
 fn migrate_data_root(old_root: &Path, new_root: &Path, marker: &Path, backup_parent: &Path) -> AppResult<()> {
-    if new_root.as_os_str().is_empty() {
-        return Err(AppError::validation("路径不能为空。"));
-    }
-    if !new_root.is_absolute() {
-        return Err(AppError::validation("请选择绝对路径（从文件夹选择器里选）。"));
-    }
-    let (Ok(n), Ok(o)) = (std::path::absolute(new_root), std::path::absolute(old_root)) else {
-        return Err(AppError::validation("无法解析路径。"));
-    };
-    if n == o {
-        return Err(AppError::validation("新目录与当前数据目录相同。"));
-    }
-    if n.starts_with(&o) || o.starts_with(&n) {
-        return Err(AppError::validation("新旧目录不能互相包含。"));
-    }
-    // 目标已存在且非空 → 拒绝（避免混入/覆盖无关文件）
-    if new_root.exists() {
-        if !new_root.is_dir() {
-            return Err(AppError::validation("目标不是文件夹。"));
+    let probe = probe_dir(old_root, new_root);
+    match probe.kind.as_str() {
+        "same" => return Err(AppError::validation("新目录与当前数据目录相同。")),
+        "invalid" => return Err(AppError::validation(probe.reason)),
+        "existing_data" | "non_empty" => {
+            return Err(AppError::validation(
+                "目标文件夹不是空的，不能往里迁移（避免混进无关文件）。如果它本来就是你的数据目录，请改用「直接使用此文件夹」；否则请选一个空文件夹。",
+            ))
         }
-        let non_empty = fs::read_dir(new_root).map(|mut it| it.next().is_some()).unwrap_or(false);
-        if non_empty {
-            return Err(AppError::validation("目标文件夹不是空的，请换一个空目录。"));
-        }
-    } else if let Some(parent) = new_root.parent() {
-        if !parent.is_dir() {
-            return Err(AppError::validation("目标的上层目录不存在。"));
-        }
+        _ => {}
+    }
+    if !new_root.exists() {
         fs::create_dir_all(new_root)?;
     }
     // 1) 完整拷贝（失败则清理本次拷入内容，原目录不动）
@@ -548,6 +684,70 @@ mod tests {
     }
 
     #[test]
+    fn probe_dir_classifies_targets() {
+        let base = std::env::temp_dir().join(format!("pwb-probe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let app_data = base.join("appdata");
+        let old_root = app_data.join("data");
+        fs::create_dir_all(&old_root).unwrap();
+        fs::write(old_root.join("待办.md"), "x").unwrap();
+
+        // 相同目录
+        assert_eq!(probe_dir(&old_root, &old_root).kind, "same");
+        // 相对路径
+        assert_eq!(probe_dir(&old_root, Path::new("relative/dir")).kind, "invalid");
+        // 不存在但上级在 → 将新建
+        let fresh = base.join("fresh");
+        assert_eq!(probe_dir(&old_root, &fresh).kind, "new");
+        // 上级不存在
+        assert_eq!(probe_dir(&old_root, &base.join("nope/deep")).kind, "invalid");
+        // 空目录
+        let empty = base.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(probe_dir(&old_root, &empty).kind, "empty");
+        // 有 WorkTop 数据
+        let other_data = base.join("old-pc");
+        fs::create_dir_all(&other_data).unwrap();
+        fs::write(other_data.join("导航.md"), "# 导航").unwrap();
+        assert_eq!(probe_dir(&old_root, &other_data).kind, "existing_data");
+        // 非空但不像数据
+        let junk = base.join("junk");
+        fs::create_dir_all(&junk).unwrap();
+        fs::write(junk.join("随便.txt"), "x").unwrap();
+        assert_eq!(probe_dir(&old_root, &junk).kind, "non_empty");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 接管模式：只写标记，目标文件与原目录都不动
+    #[test]
+    fn adopt_data_root_keeps_everything_in_place() {
+        let base = std::env::temp_dir().join(format!("pwb-adopt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let app_data = base.join("appdata");
+        let old_root = app_data.join("data");
+        fs::create_dir_all(&old_root).unwrap();
+        fs::write(old_root.join("待办.md"), "新装的").unwrap();
+        let marker = app_data.join("data-path.txt");
+        let existing = base.join("旧数据");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("待办.md"), "旧电脑的").unwrap();
+
+        adopt_data_root(&old_root, &existing, &marker, &app_data).unwrap();
+        // 标记指向新目录，旧目录与目标内容都保持原样
+        assert_eq!(fs::read_to_string(&marker).unwrap(), existing.to_string_lossy());
+        assert_eq!(fs::read_to_string(existing.join("待办.md")).unwrap(), "旧电脑的");
+        assert_eq!(fs::read_to_string(old_root.join("待办.md")).unwrap(), "新装的");
+        assert!(!fs::read_dir(&app_data).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("data-backup-")));
+        // 切换回默认位置：标记删除
+        adopt_data_root(&existing, &old_root, &marker, &app_data).unwrap();
+        assert!(!marker.exists());
+        // 相同目录 / 非法路径要拒绝
+        assert!(adopt_data_root(&existing, &existing, &marker, &app_data).is_err());
+        assert!(adopt_data_root(&existing, Path::new("relative"), &marker, &app_data).is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn clean_path_seg_matches_js_rules() {
         assert_eq!(clean_path_seg("云端API", "文档名").unwrap(), "云端API");
         assert_eq!(clean_path_seg("a/b\\c:d", "x").unwrap(), "a_b_c_d");
@@ -574,17 +774,22 @@ pub async fn pane_open(
     height: f64,
     prompt: Option<String>,
     tab: Option<String>,
+    maximized: Option<bool>,
 ) -> AppResult<()> {
     use tauri::Manager;
     if !PANE_APPS.contains(&id.as_str()) {
         return Err(AppError::validation(format!("未知功能：{id}")));
     }
+    let fill = maximized.unwrap_or(false);
     let w = width.clamp(420.0, 1600.0);
     let h = height.clamp(320.0, 1200.0);
     let label = format!("pane-{id}");
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.unminimize();
         let _ = win.show();
+        if fill {
+            let _ = win.maximize();
+        }
         let _ = win.set_focus();
         return Ok(());
     }
@@ -617,6 +822,10 @@ pub async fn pane_open(
         .build()
         .map_err(|e| AppError::new("internal", format!("创建功能窗口失败：{e}")))?;
     let _ = win.show();
+    // 卡片双击等入口要求「全屏打开」：占满工作区（标题栏仍可还原回普通尺寸）
+    if fill {
+        let _ = win.maximize();
+    }
     let _ = win.set_focus();
     Ok(())
 }
@@ -633,6 +842,68 @@ fn now_ms_v() -> u128 {
 pub fn pane_close(app: tauri::AppHandle, id: String) -> AppResult<()> {
     use tauri::Manager;
     if let Some(win) = app.get_webview_window(&format!("pane-{id}")) {
+        let _ = win.close();
+    }
+    Ok(())
+}
+
+/* ---------- 全屏工作台（类 Launchpad）：覆盖整屏、毛玻璃、展示本机应用与内置功能 ---------- */
+
+#[tauri::command]
+// 必须是 async：同步命令跑在主线程，而 WebviewWindowBuilder::build() 需要事件循环
+// 配合完成建窗，主线程里同步建窗会死锁（2026-11-13 实测：点了工作台按钮后
+// Dock/桌宠全部失去响应）。dock_open / pane_open 同为 async 就是这个原因。
+pub async fn workbench_open(app: tauri::AppHandle) -> AppResult<()> {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("workbench") {
+        // 已开着：重新铺满并前置（分辨率/主屏可能变了）
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let v = now_ms_v();
+    let url = format!("index.html?win=workbench&v={v}");
+    let monitor = app
+        .primary_monitor()
+        .map_err(|e| AppError::new("internal", format!("读取显示器失败：{e}")))?
+        .ok_or_else(|| AppError::new("internal", "未检测到显示器"))?;
+    // 覆盖整块屏幕（含任务栏与 Dock 位置），像 macOS 启动台那样全屏压住
+    let size = monitor.size();
+    let origin = monitor.position();
+    let scale = monitor.scale_factor();
+    let w = size.width as f64 / scale;
+    let h = size.height as f64 / scale;
+    let x = origin.x as f64 / scale;
+    let y = origin.y as f64 / scale;
+    let win = tauri::WebviewWindowBuilder::new(
+        &app,
+        "workbench",
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title("Worktop Workbench")
+    .inner_size(w, h)
+    .position(x, y)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(true)
+    .visible(false)
+    .background_color(tauri::window::Color(0, 0, 0, 0))
+    .build()
+    .map_err(|e| AppError::new("internal", format!("创建工作台窗口失败：{e}")))?;
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn workbench_close(app: tauri::AppHandle) -> AppResult<()> {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("workbench") {
         let _ = win.close();
     }
     Ok(())
@@ -801,205 +1072,4 @@ pub fn app_quit(app: tauri::AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/* ---------- 区域截图并复制到剪贴板 ---------- */
-//
-// 用随包的 PowerShell + WinForms 覆盖层实现（本机未安装 Windows「截图工具」，
-// ms-screenclip: 只有空的协议注册）。零新依赖：不引入截图/剪贴板 crate。
-// 脚本只做：截全屏 → 拖选矩形 → 裁剪 → Clipboard.SetImage，Esc 取消，点一下=<3px 视为取消。
-
-#[tauri::command]
-pub fn snip_region(app: tauri::AppHandle) -> AppResult<()> {
-    snip_region_inner(&app)
-}
-
-fn snip_region_inner(app: &tauri::AppHandle) -> AppResult<()> {
-    use tauri::Manager;
-    #[cfg(windows)]
-    {
-        // 优先用安装目录里的脚本，开发态退回源码目录
-        let resource = app.path().resource_dir().ok().map(|d| d.join("snip").join("snip.ps1"));
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("snip").join("snip.ps1");
-        let script = resource.filter(|p| p.is_file()).unwrap_or(dev);
-        if !script.is_file() {
-            return Err(AppError::not_found("找不到截图脚本（snip/snip.ps1）。"));
-        }
-        let mut cmd = std::process::Command::new("powershell.exe");
-        cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(&script)
-            .args(["-DelayMs", "260"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        cmd.spawn()
-            .map_err(|e| AppError::new("io", format!("启动截图失败：{e}")))?;
-        return Ok(());
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        Err(AppError::validation("区域截图目前只支持 Windows。"))
-    }
-}
-
-/* ---------- 统一截图入口（全局 Ctrl+A / 桌宠菜单 / Dock 右键共用） ---------- */
-//
-// 优先接 AirSnip（github.com/bd-dxg/airsnip，GPL-3.0 的独立截图标注工具，Rust 单文件 1.2MB）：
-// 以外部程序协作——检测已安装的 AirSnip → 不在跑就拉起（常驻托盘）→ 转发其截图热键 F1。
-// GPL 独立进程不并入本仓库代码，MIT 边界不受影响；未安装则回落自带的 PowerShell 拖选截图。
-
-#[tauri::command]
-pub fn snip_capture(app: tauri::AppHandle) -> AppResult<String> {
-    #[cfg(windows)]
-    {
-        if find_airsnip(&app).is_some() {
-            if !ensure_airsnip_started(&app) {
-                return Err(AppError::new("io", "AirSnip 拉起失败"));
-            }
-            send_f1();
-            return Ok("airsnip".into());
-        }
-        snip_region_inner(&app)?;
-        return Ok("builtin".into());
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        Err(AppError::validation("截图目前只支持 Windows。"))
-    }
-}
-
-/// 随应用启动调用：静默拉起 AirSnip 常驻托盘（不转发热键、不弹截图），
-/// 之后用户按 F1 即截图；snip_capture 也复用本函数保证在跑。
-#[tauri::command]
-pub fn snip_ensure(app: tauri::AppHandle) -> AppResult<bool> {
-    #[cfg(windows)]
-    {
-        let _ = &app;
-        Ok(ensure_airsnip_started(&app))
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        Ok(false)
-    }
-}
-
-/// 确保 AirSnip 在跑：未运行则 spawn（常驻托盘）。返回是否在运行。
-#[cfg(windows)]
-pub fn ensure_airsnip_started(app: &tauri::AppHandle) -> bool {
-    let Some(exe) = find_airsnip(app) else { return false };
-    if process_running("airsnip.exe") {
-        return true;
-    }
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    match cmd.spawn() {
-        Ok(_) => {}
-        Err(e) if e.raw_os_error() == Some(740) => {
-            // AirSnip 带 UAC 提权要求：CreateProcess 报 740，经 explorer 转发走 ShellExecute
-            let fwd = std::process::Command::new("explorer.exe").arg(&exe).spawn();
-            if fwd.is_err() {
-                eprintln!("[ensure_airsnip] explorer fallback failed: {fwd:?}");
-                return false;
-            }
-        }
-        Err(e) => {
-            eprintln!("[ensure_airsnip] spawn failed: {e} (os={:?})", e.raw_os_error());
-            return false;
-        }
-    }
-    // 首次拉起需要注册热键并预热覆盖层
-    std::thread::sleep(std::time::Duration::from_millis(1200));
-    true
-}
-
-/// 找 AirSnip 可执行文件：安装目录随包副本 > 环境变量 AIRSNIP_EXE > PATH > 常见安装位置。
-/// （src-tauri/sidecar/airsnip/AirSnip.exe 由 `npm run airsnip:fetch` 拉取、随安装包分发；
-/// GPL-3.0 独立程序，聚合分发不改变本项目 MIT 许可，分发时保留上游源码地址。）
-#[cfg(windows)]
-fn find_airsnip(app: &tauri::AppHandle) -> Option<PathBuf> {
-    use tauri::Manager;
-    // 1. 安装目录里的随包副本（合并安装：开箱即用完整截图体验）
-    if let Ok(dir) = app.path().resource_dir() {
-        let p = dir.join("airsnip").join("AirSnip.exe");
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    // 开发态：resource_dir 不含 bundle 资源，直接用源码 sidecar 目录（编译期路径）
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar").join("airsnip").join("AirSnip.exe");
-    if dev.is_file() {
-        return Some(dev);
-    }
-    if let Ok(p) = std::env::var("AIRSNIP_EXE") {
-        let p = PathBuf::from(p.trim());
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let names = ["AirSnip.exe", "airsnip.exe"];
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(';').filter(|s| !s.is_empty()) {
-            for n in names {
-                let p = Path::new(dir).join(n);
-                if p.is_file() {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    let roots = [
-        std::env::var("LOCALAPPDATA").ok().map(|d| PathBuf::from(d).join(r"Programs\AirSnip")),
-        std::env::var("LOCALAPPDATA").ok().map(|d| PathBuf::from(d).join("AirSnip")),
-        std::env::var("ProgramFiles").ok().map(|d| PathBuf::from(d).join("AirSnip")),
-        std::env::var("ProgramFiles(x86)").ok().map(|d| PathBuf::from(d).join("AirSnip")),
-        Some(PathBuf::from(r"D:\Program Files\AirSnip")),
-        Some(PathBuf::from(r"D:\app\AirSnip")),
-    ];
-    for base in roots.into_iter().flatten() {
-        for n in names {
-            let p = base.join(n);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-/// 判断进程名（小写，含 .exe）是否在运行。tasklist 一次 ~80ms，触发频率低，可接受。
-#[cfg(windows)]
-fn process_running(image_lc: &str) -> bool {
-    let out = std::process::Command::new("tasklist.exe")
-        .args(["/FI", &format!("IMAGENAME eq {image_lc}"), "/FO", "CSV", "/NH"])
-        .output();
-    let Ok(out) = out else { return false };
-    String::from_utf8_lossy(&out.stdout).to_lowercase().contains(image_lc)
-}
-
-/// 转发 AirSnip 的默认截图热键 F1（它的全局热键钩子会接住，无论前台是谁）。
-#[cfg(windows)]
-fn send_f1() {
-    #[link(name = "user32")]
-    extern "system" {
-        fn keybd_event(vk: u8, scan: u8, flags: u32, extra: usize) -> i32;
-    }
-    const VK_F1: u8 = 0x70;
-    const KEYUP: u32 = 0x0002;
-    unsafe {
-        keybd_event(VK_F1, 0, 0, 0);
-        keybd_event(VK_F1, 0, KEYUP, 0);
-    }
-}
+/* ---------- 原生截图：实现见 commands/snip.rs ---------- */

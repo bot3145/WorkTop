@@ -5,16 +5,10 @@
 //       未折叠显示当天待办数角标；单击弹出环形菜单，双击唤起工作台。
 import { computed, onMounted, onUnmounted, ref } from "vue"
 import { invoke } from "@tauri-apps/api/core"
-import { currentMonitor, getCurrentWindow, type Monitor } from "@tauri-apps/api/window"
 import { call } from "../lib/api"
 import { parseTodos } from "../lib/todo"
 import { today } from "../lib/date"
 import { accentVars, readAccent, type Accent } from "../lib/accent"
-
-const win = getCurrentWindow()
-/** 窗口逻辑尺寸（与 Rust show_mascot 一致）：x-hub 球体 48px 视觉档（窗口 52px）。 */
-const W = 52
-const H = 52
 
 /* ---------- 状态 ---------- */
 const folded = ref(false)
@@ -42,56 +36,31 @@ async function refreshTodos() {
 let todoTimer: ReturnType<typeof setInterval> | null = null
 
 /* ---------- 定位工具 ---------- */
-async function scaleOf(): Promise<number> {
-  const mon: Monitor | null = await currentMonitor().catch(() => null)
-  return mon?.scaleFactor ?? window.devicePixelRatio ?? 1
-}
-async function workArea() {
-  const mon = await currentMonitor().catch(() => null)
-  const sf = await scaleOf()
-  const wa = mon?.workArea
-  return wa
-    ? { ax: wa.position.x / sf, ay: wa.position.y / sf, aw: wa.size.width / sf, ah: wa.size.height / sf, sf }
-    : { ax: 0, ay: 0, aw: window.screen.availWidth, ah: window.screen.availHeight, sf }
-}
-async function moveWindow(x: number, y: number) {
-  const { LogicalPosition } = await import("@tauri-apps/api/window")
-  await win.setPosition(new LogicalPosition(Math.round(x), Math.round(y))).catch(() => {})
-}
+/** 配置落盘的 x/y/mascotY 已升级为物理像素（Rust 侧负责坐标换算），前端只透传数值。 */
 async function saveCfg(patch: Record<string, unknown>) {
   await invoke("desktop_save", { patch }).catch(() => {})
 }
 
 /* ---------- 折叠 / 展开 ---------- */
-async function foldTo(side: "left" | "right", y: number) {
-  const { ax, aw, ah, ay } = await workArea()
-  folded.value = true
-  edge.value = side
-  await moveWindow(side === "left" ? ax - W * 0.5 : ax + aw - W * 0.5, Math.min(Math.max(y, ay), ay + ah - H * 0.5))
-  await saveCfg({ mascotFolded: true, mascotEdge: side, mascotY: y })
-}
+/** 展开回到折叠前的物理坐标；落点由 Rust 钳制进所在屏工作区。 */
 async function unfold() {
-  const cfg = await invoke<{ config: Record<string, unknown> }>("desktop_state").catch(() => null)
-  const c = (cfg?.config ?? {}) as Record<string, unknown>
-  const { ax, aw, ah, ay } = await workArea()
-  const x = typeof c.x === "number" ? c.x : ax + aw - W - 16
-  const y = typeof c.y === "number" ? c.y : ay + ah - H - 16
-  folded.value = false
-  await moveWindow(x, y)
-  await saveCfg({ mascotFolded: false, x, y })
+  try {
+    const pos = await invoke<[number, number]>("mascot_unfold")
+    folded.value = false
+    await saveCfg({ mascotFolded: false, x: pos[0], y: pos[1], mascotPhysical: true })
+  } catch { /* Rust 侧已兜底为默认位置 */ }
 }
 
-/* ---------- 拖动 ---------- */
-let drag: { sx: number; sy: number; wx: number; wy: number; moved: boolean } | null = null
-let pending: { x: number; y: number } | null = null
+/* ---------- 拖动：全部走 Rust 物理像素，跨显示器自由移动 ---------- */
+let drag: { sx: number; sy: number; moved: boolean } | null = null
+let pending = false
 let committing = false
-async function flushPos() {
+async function flushDrag() {
   committing = true
   try {
     while (pending) {
-      const p = pending
-      pending = null
-      await moveWindow(p.x, p.y)
+      pending = false
+      await invoke("mascot_drag_update").catch(() => {})
     }
   } finally {
     committing = false
@@ -105,25 +74,20 @@ async function onPointerDown(e: PointerEvent) {
     void unfold()
     return
   }
-  const sf = await scaleOf()
-  const pos = await win.outerPosition().catch(() => null)
-  if (!pos) return
-  drag = { sx: e.screenX, sy: e.screenY, wx: pos.x / sf, wy: pos.y / sf, moved: false }
+  await invoke("mascot_drag_begin").catch(() => null)
+  drag = { sx: e.screenX, sy: e.screenY, moved: false }
   window.addEventListener("pointermove", onDragMove)
   window.addEventListener("pointerup", onDragUp)
 }
-async function onDragMove(e: PointerEvent) {
+function onDragMove(e: PointerEvent) {
   if (!drag) return
-  const dx = e.screenX - drag.sx
-  const dy = e.screenY - drag.sy
-  if (!drag.moved && Math.hypot(dx, dy) < 3) return
+  if (!drag.moved && Math.hypot(e.screenX - drag.sx, e.screenY - drag.sy) < 3) return
   drag.moved = true
   dragging.value = true
-  const { ax, aw, ah, ay } = await workArea()
-  const x = Math.min(Math.max(drag.wx + dx, ax - W * 0.4), ax + aw - W * 0.6)
-  const y = Math.min(Math.max(drag.wy + dy, ay), ay + ah - H * 0.5)
-  pending = { x, y }
-  if (!committing) void flushPos()
+  // 位置计算在 Rust（真实光标位置 + 物理像素）：混合 DPI 下 JS 的逻辑坐标
+  // 会在跨屏瞬间跳变，这里只负责把「有拖动增量」合并成尽量少的 IPC。
+  pending = true
+  if (!committing) void flushDrag()
 }
 async function onDragUp(e: PointerEvent) {
   window.removeEventListener("pointermove", onDragMove)
@@ -137,21 +101,24 @@ async function onDragUp(e: PointerEvent) {
     await invoke("mascot_menu_open").catch((e) => console.warn("mascot_menu_open failed", e))
     return
   }
-  // 拖动结束：靠边 20px 内 = 折叠到该侧
-  const { ax, aw } = await workArea()
-  const sf = await scaleOf()
-  const pos = await win.outerPosition().catch(() => null)
-  if (!pos) return
-  const wx = pos.x / sf
-  const wy = pos.y / sf
-  if (ax + aw - (wx + W) < 20) {
-    await saveCfg({ x: d.wx, y: d.wy })
-    await foldTo("right", wy)
-  } else if (wx - ax < 20) {
-    await saveCfg({ x: d.wx, y: d.wy })
-    await foldTo("left", wy)
+  // 结束：Rust 判定是否靠边折叠并搬过去，回传最终状态存配置
+  const end = await invoke<{ x: number; y: number; folded: boolean; edge: string; foldY: number }>(
+    "mascot_drag_end",
+  ).catch(() => null)
+  if (!end) return
+  if (end.folded) {
+    folded.value = true
+    edge.value = end.edge === "left" ? "left" : "right"
+    await saveCfg({
+      x: end.x,
+      y: end.y,
+      mascotFolded: true,
+      mascotEdge: end.edge,
+      mascotY: end.foldY,
+      mascotPhysical: true,
+    })
   } else {
-    await saveCfg({ x: wx, y: wy })
+    await saveCfg({ x: end.x, y: end.y, mascotFolded: false, mascotPhysical: true })
   }
   void e
 }

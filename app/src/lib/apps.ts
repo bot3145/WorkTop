@@ -19,3 +19,22 @@ export const APPS: AppDef[] = [
 ]
 
 export const appDef = (id: string) => APPS.find((a) => a.id === id)
+
+/* ---------- 内置功能快捷入口（Dock / 全屏工作台共用） ---------- */
+// id "pad" 是特殊项：打开全屏工作台（不对应任何功能窗口）。
+export interface BuiltinDef {
+  id: string
+  titleKey: string
+  icon: string
+  w: number
+  h: number
+}
+
+export const BUILTIN_FEATURES: BuiltinDef[] = [
+  { id: "pad", titleKey: "dock_workbench", icon: "grid", w: 0, h: 0 },
+  ...APPS.map((a) => ({ ...a })),
+]
+
+export const builtinDef = (id: string) => BUILTIN_FEATURES.find((b) => b.id === id)
+
+export const BUILTIN_IDS: string[] = BUILTIN_FEATURES.map((b) => b.id)

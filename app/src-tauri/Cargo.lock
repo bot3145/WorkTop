@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "pwb-app"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2746,6 +2746,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "keyring",
+ "png",
  "reqwest 0.12.28",
  "scrypt",
  "serde",
@@ -2759,6 +2760,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.21",
  "tokio",
+ "windows",
 ]
 
 [[package]]
